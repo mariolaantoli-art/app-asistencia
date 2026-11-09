@@ -1,6 +1,8 @@
 import asyncio
 import hmac
+import secrets
 import time
+from zoneinfo import ZoneInfo
 from collections import defaultdict, deque
 from contextlib import suppress
 import jwt
@@ -47,7 +49,16 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("id", ASCENDING)], name="id", unique=True),
         IndexModel([("status", ASCENDING), ("created_at", DESCENDING)], name="status_created"),
     ],
+    "class_day_status": [
+        IndexModel([("date", ASCENDING)], name="date", unique=True),
+    ],
 }
+
+
+async def backfill_student_codes() -> None:
+    # Alumnos antiguos sin código personal: se les asigna uno.
+    async for s in db.students.find({"code": {"$exists": False}}, {"_id": 0, "id": 1}):
+        await db.students.update_one({"id": s["id"], "code": {"$exists": False}}, {"$set": {"code": _new_code()}})
 
 ADMIN_PIN = os.environ["ADMIN_PIN"]
 JWT_SECRET = os.environ["JWT_SECRET"]
@@ -224,6 +235,14 @@ async def create_registration(body: RegistrationCreate, request: Request):
 BonoType = Literal[5, 10]
 
 
+def _new_code() -> str:
+    return f"{secrets.randbelow(10000):04d}"
+
+
+def _today_madrid() -> date:
+    return datetime.now(ZoneInfo("Europe/Madrid")).date()
+
+
 class Student(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
@@ -233,6 +252,7 @@ class Student(BaseModel):
     phone: str = ""
     email: str = ""
     health_notes: str = ""
+    code: str = Field(default_factory=lambda: _new_code())  # código personal de 4 cifras
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -246,6 +266,7 @@ class Attendance(BaseModel):
     student_id: str
     student_name: str
     class_date: str  # YYYY-MM-DD
+    source: Literal["monitor", "alumno"] = "monitor"
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -388,66 +409,189 @@ async def reject_registration(reg_id: str):
 
 # -------- ATTENDANCE --------
 
+COURSE_START = date(2026, 10, 1)
+COURSE_END = date(2027, 6, 30)
+DayStatus = Literal["normal", "festivo", "suspendida"]
+
+
 def _is_valid_class_date(d: date) -> bool:
     # Martes=1, Jueves=3 (weekday)
-    if d.weekday() not in (1, 3):
-        return False
-    start = date(2026, 10, 1)
-    end = date(2027, 6, 30)
-    return start <= d <= end
+    return d.weekday() in (1, 3) and COURSE_START <= d <= COURSE_END
 
 
-@api_router.post("/attendance", response_model=Attendance)
-async def register_attendance(payload: AttendanceCreate):
-    student = await db.students.find_one({"id": payload.student_id}, {"_id": 0})
+def _parse_date(s: Optional[str]) -> date:
+    if not s:
+        return _today_madrid()
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Formato de fecha inválido (YYYY-MM-DD)")
+
+
+async def _cancelled_map() -> dict[str, str]:
+    docs = await db.class_day_status.find({"status": {"$ne": "normal"}}, {"_id": 0}).to_list(500)
+    return {d["date"]: d["status"] for d in docs}
+
+
+async def _do_register(student_id: str, cd: date, source: str) -> Attendance:
+    student = await db.students.find_one({"id": student_id}, {"_id": 0})
     if not student:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
-    if student["classes_remaining"] <= 0:
-        raise HTTPException(status_code=400, detail="El alumno no tiene clases en su bono")
-
-    if payload.class_date:
-        try:
-            cd = date.fromisoformat(payload.class_date)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Formato de fecha inválido (YYYY-MM-DD)")
-    else:
-        cd = date.today()
-
-    # Permitir registrar en el día aunque sea fuera de rango si el usuario insiste, pero por defecto validar
     if not _is_valid_class_date(cd):
         raise HTTPException(
             status_code=400,
             detail="La fecha debe ser martes o jueves entre octubre 2026 y junio 2027",
         )
-
-    # Evitar duplicado mismo alumno misma fecha
-    existing = await db.attendance.find_one(
-        {"student_id": payload.student_id, "class_date": cd.isoformat()}, {"_id": 0}
-    )
+    day = await db.class_day_status.find_one({"date": cd.isoformat()}, {"_id": 0})
+    if day and day.get("status") in ("festivo", "suspendida"):
+        label = "festivo" if day["status"] == "festivo" else "clase suspendida"
+        raise HTTPException(status_code=400, detail=f"Ese día está marcado como {label}")
+    if student["classes_remaining"] <= 0:
+        raise HTTPException(status_code=400, detail="No quedan clases en el bono")
+    existing = await db.attendance.find_one({"student_id": student_id, "class_date": cd.isoformat()}, {"_id": 0})
     if existing:
         raise HTTPException(status_code=409, detail="Ya existe asistencia registrada para esa fecha")
 
-    att = Attendance(
-        student_id=payload.student_id,
-        student_name=student["name"],
-        class_date=cd.isoformat(),
-    )
+    att = Attendance(student_id=student_id, student_name=student["name"], class_date=cd.isoformat(), source=source)
     # Descuento atómico: solo si aún quedan clases
     dec = await db.students.update_one(
-        {"id": payload.student_id, "classes_remaining": {"$gt": 0}},
+        {"id": student_id, "classes_remaining": {"$gt": 0}},
         {"$inc": {"classes_remaining": -1, "money_remaining": -COST_PER_CLASS_STUDENT}},
     )
     if dec.modified_count == 0:
-        raise HTTPException(status_code=400, detail="El alumno no tiene clases en su bono")
+        raise HTTPException(status_code=400, detail="No quedan clases en el bono")
     try:
         await db.attendance.insert_one(att.model_dump())
     except DuplicateKeyError:
         await db.students.update_one(
-            {"id": payload.student_id},
+            {"id": student_id},
             {"$inc": {"classes_remaining": 1, "money_remaining": COST_PER_CLASS_STUDENT}},
         )
         raise HTTPException(status_code=409, detail="Ya existe asistencia registrada para esa fecha")
     return att
+
+
+@api_router.post("/attendance", response_model=Attendance)
+async def register_attendance(payload: AttendanceCreate):
+    return await _do_register(payload.student_id, _parse_date(payload.class_date), "monitor")
+
+
+# -------- ESTADO DE DÍAS (festivo / suspendida) --------
+
+class DayStatusPayload(BaseModel):
+    status: DayStatus
+
+
+@api_router.put("/class-days/{day}")
+async def set_day_status(day: str, payload: DayStatusPayload):
+    cd = _parse_date(day)
+    if not _is_valid_class_date(cd):
+        raise HTTPException(status_code=400, detail="No es un día de clase del curso")
+    if payload.status != "normal":
+        n = await db.attendance.count_documents({"class_date": cd.isoformat()})
+        if n:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Ese día ya tiene {n} asistencia(s). Deshazlas en Historial antes de marcarlo",
+            )
+    await db.class_day_status.update_one(
+        {"date": cd.isoformat()},
+        {"$set": {"date": cd.isoformat(), "status": payload.status, "updated_at": datetime.now(timezone.utc)}},
+        upsert=True,
+    )
+    return {"date": cd.isoformat(), "status": payload.status}
+
+
+# -------- ZONA ALUMNO (pública, con código personal) --------
+
+_code_failures: dict[str, deque] = defaultdict(deque)
+CODE_MAX_FAILURES_STUDENT = 5
+CODE_MAX_FAILURES_IP = 30  # varios alumnos comparten la WiFi del gimnasio
+
+
+def _check_code_limit(key: str) -> None:
+    now = time.monotonic()
+    q = _code_failures[key]
+    while q and q[0] <= now - LOGIN_WINDOW:
+        q.popleft()
+    limit = CODE_MAX_FAILURES_IP if key.startswith("ip:") else CODE_MAX_FAILURES_STUDENT
+    if len(q) >= limit:
+        raise HTTPException(status_code=429, detail="Demasiados intentos. Prueba de nuevo en 15 minutos")
+
+
+async def _verify_student_code(student_id: str, code: str, request: Request) -> dict:
+    # Límite por alumno y por IP para que el código de 4 cifras no se pueda adivinar
+    keys = [f"s:{student_id}", f"ip:{_client_key(request)}"]
+    for k in keys:
+        _check_code_limit(k)
+    student = await db.students.find_one({"id": student_id}, {"_id": 0})
+    if not student or not hmac.compare_digest(str(student.get("code", "")).encode(), code.encode()):
+        now = time.monotonic()
+        for k in keys:
+            _code_failures[k].append(now)
+        raise HTTPException(status_code=401, detail="Nombre o código incorrecto")
+    return student
+
+
+class StudentCodePayload(BaseModel):
+    student_id: str
+    code: str = Field(min_length=4, max_length=4)
+
+
+class StudentAttendancePayload(StudentCodePayload):
+    class_date: str
+
+
+@public_router.get("/public/students")
+async def public_search_students(q: str = Query("", max_length=60)):
+    term = q.strip()
+    if len(term) < 3:
+        return []
+    import re
+    docs = await db.students.find(
+        {"name": {"$regex": re.escape(term), "$options": "i"}}, {"_id": 0, "id": 1, "name": 1}
+    ).limit(10).to_list(10)
+    return docs
+
+
+def _student_days(cancelled: dict[str, str]) -> list[str]:
+    today = _today_madrid()
+    out = []
+    cur = COURSE_START
+    while cur <= min(today, COURSE_END):
+        if cur.weekday() in (1, 3) and cur.isoformat() not in cancelled:
+            out.append(cur.isoformat())
+        cur += timedelta(days=1)
+    return out
+
+
+@public_router.post("/public/me")
+async def public_me(payload: StudentCodePayload, request: Request):
+    student = await _verify_student_code(payload.student_id, payload.code, request)
+    attended = await db.attendance.find({"student_id": student["id"]}, {"_id": 0, "class_date": 1}).to_list(500)
+    return {
+        "id": student["id"],
+        "name": student["name"],
+        "classes_remaining": student["classes_remaining"],
+        "money_remaining": student["money_remaining"],
+        "attended_dates": sorted({a["class_date"] for a in attended}, reverse=True),
+        "available_days": _student_days(await _cancelled_map()),
+    }
+
+
+@public_router.post("/public/attendance")
+async def public_register(payload: StudentAttendancePayload, request: Request):
+    await _verify_student_code(payload.student_id, payload.code, request)
+    cd = _parse_date(payload.class_date)
+    if cd > _today_madrid():
+        raise HTTPException(status_code=400, detail="Solo puedes registrar clases de hoy o días anteriores")
+    att = await _do_register(payload.student_id, cd, "alumno")
+    s = await db.students.find_one({"id": payload.student_id}, {"_id": 0})
+    return {
+        "class_date": att.class_date,
+        "classes_remaining": s["classes_remaining"],
+        "money_remaining": s["money_remaining"],
+    }
 
 
 @api_router.delete("/attendance/{attendance_id}")
@@ -528,16 +672,16 @@ async def monthly_summary(year: int = Query(...), month: int = Query(..., ge=1, 
 
 @api_router.get("/class-days")
 async def class_days():
-    """Devuelve todos los días de clase (martes y jueves) entre Oct 2026 y Jun 2027."""
-    start = date(2026, 10, 1)
-    end = date(2027, 6, 30)
+    """Devuelve todos los días de clase (martes y jueves) entre Oct 2026 y Jun 2027, más los cancelados."""
+    start = COURSE_START
+    end = COURSE_END
     days = []
     cur = start
     while cur <= end:
         if cur.weekday() in (1, 3):
             days.append(cur.isoformat())
         cur += timedelta(days=1)
-    return {"days": days, "count": len(days)}
+    return {"days": days, "count": len(days), "cancelled": await _cancelled_map()}
 
 
 app.include_router(public_router)
@@ -561,6 +705,7 @@ logger = logging.getLogger(__name__)
 @app.on_event("startup")
 async def start_index_build():
     app.state.index_task = asyncio.create_task(ensure_indexes())
+    await backfill_student_codes()
 
 
 @app.on_event("shutdown")

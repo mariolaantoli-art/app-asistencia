@@ -23,15 +23,28 @@ export default function Bienvenida() {
 
       <Pressable
         style={({ pressed }) => [styles.option, styles.optionPrimary, pressed && { opacity: 0.85 }]}
+        onPress={() => router.push("/mi-clase")}
+        testID="go-to-student-checkin-btn"
+      >
+        <Ionicons name="checkmark-circle" size={24} color={colors.onBrandPrimary} />
+        <View style={{ flex: 1 }}>
+          <Text style={[styles.optionTitle, { color: colors.onBrandPrimary }]}>Registrar mi clase</Text>
+          <Text style={[styles.optionText, { color: colors.onBrandPrimary }]}>Con tu nombre y código personal</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={20} color={colors.onBrandPrimary} />
+      </Pressable>
+
+      <Pressable
+        style={({ pressed }) => [styles.option, pressed && { opacity: 0.85 }]}
         onPress={() => router.push("/inscripcion")}
         testID="go-to-registration-btn"
       >
-        <Ionicons name="person-add" size={24} color={colors.onBrandPrimary} />
+        <Ionicons name="person-add" size={24} color={colors.brandSecondary} />
         <View style={{ flex: 1 }}>
-          <Text style={[styles.optionTitle, { color: colors.onBrandPrimary }]}>Soy alumno</Text>
-          <Text style={[styles.optionText, { color: colors.onBrandPrimary }]}>Envía tus datos para apuntarte</Text>
+          <Text style={styles.optionTitle}>Soy alumno nuevo</Text>
+          <Text style={styles.optionText}>Envía tus datos para apuntarte</Text>
         </View>
-        <Ionicons name="chevron-forward" size={20} color={colors.onBrandPrimary} />
+        <Ionicons name="chevron-forward" size={20} color={colors.muted} />
       </Pressable>
 
       <Pressable

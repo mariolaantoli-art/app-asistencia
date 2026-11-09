@@ -18,7 +18,7 @@ import Ionicons from "@react-native-vector-icons/ionicons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "expo-router";
 
-import { api, logout, Student } from "@/src/api";
+import { api, DayStatus, logout, Student } from "@/src/api";
 import { makeStyles, useTheme, spacing, radius } from "@/src/theme";
 import { defaultClassDay, formatLongDate, formatShortDate, todayYMD } from "@/src/utils/dates";
 
@@ -47,8 +47,27 @@ export default function AlumnosScreen() {
   const router = useRouter();
   const attendanceQuery = useQuery({ queryKey: ["attendance"], queryFn: api.listAttendance });
   const days = useMemo(() => daysQuery.data?.days ?? [], [daysQuery.data]);
+  const cancelled = daysQuery.data?.cancelled ?? {};
+  const [showDayOptions, setShowDayOptions] = useState(false);
   const [pickedDay, setPickedDay] = useState<string | undefined>();
   const selectedDay = pickedDay ?? defaultClassDay(days);
+  const selectedStatus = selectedDay ? cancelled[selectedDay] : undefined;
+
+  const dayStatusMut = useMutation({
+    mutationFn: ({ day, status }: { day: string; status: DayStatus | "normal" }) => api.setDayStatus(day, status),
+    onSuccess: (r) => {
+      qc.invalidateQueries({ queryKey: ["class-days"] });
+      setShowDayOptions(false);
+      showToast(
+        r.status === "normal" ? "Día marcado con clase normal" : r.status === "festivo" ? "Día marcado como festivo" : "Clase marcada como suspendida",
+        "ok",
+      );
+    },
+    onError: (e: Error) => {
+      setShowDayOptions(false);
+      showToast(e.message, "err");
+    },
+  });
 
   const attendedIds = useMemo(() => {
     const set = new Set<string>();
@@ -108,16 +127,32 @@ export default function AlumnosScreen() {
             <Ionicons name="log-out-outline" size={22} color={colors.muted} />
           </Pressable>
         </View>
-        <Text style={styles.headerSubtitle} testID="selected-class-day">
-          {selectedDay ? `Clase: ${formatLongDate(selectedDay)}${selectedDay === today ? " (hoy)" : ""}` : "Cargando días de clase…"}
-        </Text>
+        <View style={styles.subtitleRow}>
+          <Text style={[styles.headerSubtitle, { flex: 1 }]} testID="selected-class-day">
+            {selectedDay ? `Clase: ${formatLongDate(selectedDay)}${selectedDay === today ? " (hoy)" : ""}` : "Cargando días de clase…"}
+          </Text>
+          {selectedDay && (
+            <Pressable style={styles.dayOptionsBtn} onPress={() => setShowDayOptions(true)} testID="day-options-btn">
+              <Ionicons name="calendar-outline" size={16} color={colors.brandSecondary} />
+              <Text style={styles.dayOptionsText}>Estado del día</Text>
+            </Pressable>
+          )}
+        </View>
+        {selectedStatus && (
+          <View style={styles.cancelBanner} testID="day-cancelled-banner">
+            <Ionicons name={selectedStatus === "festivo" ? "sunny" : "close-circle"} size={18} color={colors.onSurfaceInverse} />
+            <Text style={styles.cancelBannerText}>
+              {selectedStatus === "festivo" ? "Festivo: no hay clase este día" : "Clase suspendida este día"}
+            </Text>
+          </View>
+        )}
         {pendingCount > 0 && (
           <Pressable style={styles.pendingBanner} onPress={() => router.push("/solicitudes")} testID="pending-requests-banner">
-            <Ionicons name="mail-unread" size={18} color={colors.onWarning} />
+            <Ionicons name="mail-unread" size={18} color={colors.onWarningSoft} />
             <Text style={styles.pendingText}>
               {pendingCount} {pendingCount === 1 ? "inscripción pendiente" : "inscripciones pendientes"}
             </Text>
-            <Ionicons name="chevron-forward" size={18} color={colors.onWarning} />
+            <Ionicons name="chevron-forward" size={18} color={colors.onWarningSoft} />
           </Pressable>
         )}
       </View>
@@ -134,13 +169,22 @@ export default function AlumnosScreen() {
             contentContainerStyle={{ paddingHorizontal: spacing.lg }}
             renderItem={({ item }) => {
               const active = item === selectedDay;
+              const off = !!cancelled[item];
               return (
                 <Pressable
                   onPress={() => setPickedDay(item)}
-                  style={[styles.dayChip, active && styles.dayChipActive]}
+                  style={[styles.dayChip, off && styles.dayChipOff, active && styles.dayChipActive, active && off && styles.dayChipOffActive]}
                   testID={`class-day-${item}`}
                 >
-                  <Text style={[styles.dayChipText, active && styles.dayChipTextActive]}>{formatShortDate(item)}</Text>
+                  <Text
+                    style={[
+                      styles.dayChipText,
+                      off && styles.dayChipTextOff,
+                      active && styles.dayChipTextActive,
+                    ]}
+                  >
+                    {formatShortDate(item)}
+                  </Text>
                 </Pressable>
               );
             }}
@@ -179,6 +223,7 @@ export default function AlumnosScreen() {
               student={item}
               onRegister={() => registerMut.mutate(item.id)}
               attended={attendedIds.has(item.id)}
+              dayOff={!!selectedStatus}
               busy={registerMut.isPending && registerMut.variables === item.id}
               onDelete={() => setConfirmDelete(item)}
               onRenew={() => setShowRenew(item)}
@@ -199,12 +244,44 @@ export default function AlumnosScreen() {
       <AddStudentModal visible={showAdd} onClose={() => setShowAdd(false)} onDone={() => showToast("Alumno añadido", "ok")} />
       <RenewBonoModal student={showRenew} onClose={() => setShowRenew(null)} onDone={() => showToast("Bono renovado", "ok")} />
 
+      <Modal visible={showDayOptions} transparent animationType="slide" onRequestClose={() => setShowDayOptions(false)}>
+        <View style={styles.modalWrap}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setShowDayOptions(false)} />
+          <View style={[styles.modalSheet, { paddingBottom: sheetInsets.bottom + spacing.xl }]} testID="day-options-modal">
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>{selectedDay ? formatLongDate(selectedDay) : ""}</Text>
+            <Text style={styles.helper}>Los días festivos o suspendidos no cuentan como clase y no se puede registrar asistencia.</Text>
+            {([
+              { status: "normal", label: "Clase normal", icon: "checkmark-circle-outline" },
+              { status: "festivo", label: "Festivo", icon: "sunny-outline" },
+              { status: "suspendida", label: "Clase suspendida", icon: "close-circle-outline" },
+            ] as const).map((o) => {
+              const current = (selectedStatus ?? "normal") === o.status;
+              return (
+                <Pressable
+                  key={o.status}
+                  style={[styles.dayOption, current && styles.dayOptionActive]}
+                  disabled={dayStatusMut.isPending || current}
+                  onPress={() => selectedDay && dayStatusMut.mutate({ day: selectedDay, status: o.status })}
+                  testID={`day-status-${o.status}`}
+                >
+                  <Ionicons name={o.icon} size={20} color={current ? colors.onBrandPrimary : colors.brandSecondary} />
+                  <Text style={[styles.dayOptionText, current && { color: colors.onBrandPrimary }]}>{o.label}</Text>
+                  {current && <Ionicons name="checkmark" size={20} color={colors.onBrandPrimary} />}
+                </Pressable>
+              );
+            })}
+          </View>
+        </View>
+      </Modal>
+
       <Modal visible={!!infoStudent} transparent animationType="slide" onRequestClose={() => setInfoStudent(null)}>
         <View style={styles.modalWrap}>
           <Pressable style={styles.modalBackdrop} onPress={() => setInfoStudent(null)} />
           <View style={[styles.modalSheet, { paddingBottom: sheetInsets.bottom + spacing.xl }]} testID="student-info-modal">
             <View style={styles.sheetHandle} />
             <Text style={styles.sheetTitle}>{infoStudent?.name}</Text>
+            <InfoLine icon="key-outline" label="Código personal (para registrar sus clases)" value={infoStudent?.code} testID="student-code-value" />
             <InfoLine icon="call-outline" label="Teléfono" value={infoStudent?.phone} />
             <InfoLine icon="mail-outline" label="Email" value={infoStudent?.email} />
             <InfoLine icon="medkit-outline" label="Salud / lesiones" value={infoStudent?.health_notes} />
@@ -256,7 +333,7 @@ export default function AlumnosScreen() {
   );
 }
 
-function InfoLine({ icon, label, value }: { icon: string; label: string; value?: string }) {
+function InfoLine({ icon, label, value, testID }: { icon: string; label: string; value?: string; testID?: string }) {
   const { colors } = useTheme();
   const styles = useStyles();
   return (
@@ -264,7 +341,7 @@ function InfoLine({ icon, label, value }: { icon: string; label: string; value?:
       <Ionicons name={icon as any} size={18} color={colors.brandSecondary} />
       <View style={{ flex: 1 }}>
         <Text style={styles.infoLabel}>{label}</Text>
-        <Text style={styles.infoValue}>{value || "—"}</Text>
+        <Text style={styles.infoValue} testID={testID}>{value || "—"}</Text>
       </View>
     </View>
   );
@@ -274,6 +351,7 @@ function StudentRow({
   student,
   onRegister,
   attended,
+  dayOff,
   busy,
   onDelete,
   onRenew,
@@ -282,6 +360,7 @@ function StudentRow({
   student: Student;
   onRegister: () => void;
   attended: boolean;
+  dayOff: boolean;
   busy: boolean;
   onDelete: () => void;
   onRenew: () => void;
@@ -316,10 +395,10 @@ function StudentRow({
       <View style={styles.cardActions}>
         <Pressable
           onPress={onRegister}
-          disabled={busy || low || attended}
+          disabled={busy || low || attended || dayOff}
           style={({ pressed }) => [
             styles.registerBtn,
-            (low || attended) && styles.registerBtnDisabled,
+            (low || attended || dayOff) && styles.registerBtnDisabled,
             pressed && !low && styles.registerBtnPressed,
           ]}
           testID={`register-attendance-${student.id}`}
@@ -331,8 +410,10 @@ function StudentRow({
               <Ionicons name="checkmark-done" size={16} color={colors.onBrandPrimary} />
               <Text style={styles.registerBtnText}>Asistió</Text>
             </>
+          ) : dayOff ? (
+            <Text style={[styles.registerBtnText, styles.registerBtnTextOff]}>Sin clase</Text>
           ) : low ? (
-            <Text style={styles.registerBtnText}>Sin bono</Text>
+            <Text style={[styles.registerBtnText, styles.registerBtnTextOff]}>Sin bono</Text>
           ) : (
             <>
               <Ionicons name="checkmark-circle" size={16} color={colors.onBrandPrimary} />
@@ -546,12 +627,12 @@ const useStyles = makeStyles((colors) => ({
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
-    backgroundColor: colors.warning,
+    backgroundColor: colors.warningSoft,
     borderRadius: radius.md,
     paddingHorizontal: spacing.md,
     minHeight: 44,
   },
-  pendingText: { flex: 1, color: colors.onWarning, fontWeight: "700", fontSize: 14 },
+  pendingText: { flex: 1, color: colors.onWarningSoft, fontWeight: "700", fontSize: 14 },
   nameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   infoLine: { flexDirection: "row", gap: spacing.md, paddingVertical: spacing.sm, alignItems: "flex-start" },
   infoLabel: { fontSize: 12, color: colors.muted, fontWeight: "600" },
@@ -572,6 +653,43 @@ const useStyles = makeStyles((colors) => ({
     flexShrink: 0,
   },
   dayChipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandSecondary },
+  dayChipOff: { backgroundColor: colors.surfaceTertiary, borderColor: colors.surfaceTertiary },
+  dayChipOffActive: { backgroundColor: colors.surfaceInverse, borderColor: colors.surfaceInverse },
+  dayChipTextOff: { color: colors.muted, textDecorationLine: "line-through" },
+  subtitleRow: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
+  dayOptionsBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    minHeight: 36,
+    paddingHorizontal: 10,
+    borderRadius: radius.pill,
+    backgroundColor: colors.brandTertiary,
+  },
+  dayOptionsText: { fontSize: 12, fontWeight: "700", color: colors.brandSecondary },
+  cancelBanner: {
+    marginTop: spacing.sm,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.surfaceInverse,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    minHeight: 40,
+  },
+  cancelBannerText: { color: colors.onSurfaceInverse, fontWeight: "700", fontSize: 14 },
+  dayOption: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    minHeight: 52,
+    paddingHorizontal: spacing.md,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+    marginTop: spacing.sm,
+  },
+  dayOptionActive: { backgroundColor: colors.brandPrimary },
+  dayOptionText: { flex: 1, fontSize: 15, fontWeight: "600", color: colors.onSurface },
   dayChipText: { fontSize: 13, fontWeight: "600", color: colors.onSurfaceSecondary },
   dayChipTextActive: { color: colors.onBrandPrimary },
   emptyWrap: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: spacing.xl },
@@ -629,8 +747,9 @@ const useStyles = makeStyles((colors) => ({
     justifyContent: "center",
   },
   registerBtnPressed: { backgroundColor: colors.brandSecondary },
-  registerBtnDisabled: { backgroundColor: colors.borderStrong },
+  registerBtnDisabled: { backgroundColor: colors.surfaceTertiary },
   registerBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 13, flexShrink: 1, textAlign: "center" },
+  registerBtnTextOff: { color: colors.onSurfaceTertiary },
   smallActionsRow: { flexDirection: "row", gap: 2 },
   iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
 

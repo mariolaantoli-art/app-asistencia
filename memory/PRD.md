@@ -29,6 +29,7 @@ App móvil para controlar asistencia de clases funcionales (martes y jueves, oct
 - Ficha del alumno con teléfono, email y salud (icono si tiene observaciones)
 
 ## Backlog
+- 2026-11-09 iteración 3: marcar días como Festivo/Suspendida (bloquea asistencias); zona alumno "Registrar mi clase" con nombre + código personal de 4 cifras (visible en ficha), hoy o días anteriores, muestra saldo; historial indica "registrado por el alumno"
 - Datos: 57 alumnos ya inscritos cargados sin bono (seed_alumnos.py, idempotente) – 2026-11-09
 - P1: Exportar resumen mensual a PDF/Excel para el ayuntamiento
 - P1: Aviso de bono a punto de agotarse

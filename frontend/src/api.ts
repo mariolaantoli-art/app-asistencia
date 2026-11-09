@@ -58,6 +58,43 @@ export async function logout(): Promise<void> {
   queryClient.clear();
 }
 
+export type DayStatus = "festivo" | "suspendida";
+
+// ---- Zona alumno (pública, con código personal) ----
+export type StudentMe = {
+  id: string;
+  name: string;
+  classes_remaining: number;
+  money_remaining: number;
+  attended_dates: string[];
+  available_days: string[];
+};
+
+async function publicPost<T>(path: string, body: object): Promise<T> {
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  return (await res.json()) as T;
+}
+
+export const studentApi = {
+  search: async (q: string): Promise<{ id: string; name: string }[]> => {
+    const res = await fetch(`${API_BASE}/public/students?q=${encodeURIComponent(q)}`);
+    if (!res.ok) throw new Error(await errorDetail(res));
+    return res.json();
+  },
+  me: (student_id: string, code: string) => publicPost<StudentMe>("/public/me", { student_id, code }),
+  register: (student_id: string, code: string, class_date: string) =>
+    publicPost<{ class_date: string; classes_remaining: number; money_remaining: number }>("/public/attendance", {
+      student_id,
+      code,
+      class_date,
+    }),
+};
+
 export type Student = {
   id: string;
   name: string;
@@ -67,6 +104,7 @@ export type Student = {
   phone?: string;
   email?: string;
   health_notes?: string;
+  code?: string;
   created_at: string;
 };
 
@@ -75,6 +113,7 @@ export type Attendance = {
   student_id: string;
   student_name: string;
   class_date: string;
+  source?: "monitor" | "alumno";
   created_at: string;
 };
 
@@ -134,7 +173,9 @@ export const api = {
   monthlySummary: (year: number, month: number) =>
     request<MonthlySummary>(`/summary/monthly?year=${year}&month=${month}`),
 
-  classDays: () => request<{ days: string[]; count: number }>("/class-days"),
+  classDays: () => request<{ days: string[]; count: number; cancelled: Record<string, DayStatus> }>("/class-days"),
+  setDayStatus: (day: string, status: DayStatus | "normal") =>
+    request<{ date: string; status: string }>(`/class-days/${day}`, { method: "PUT", body: JSON.stringify({ status }) }),
 
   listRegistrations: () => request<Registration[]>("/registrations"),
   approveRegistration: (id: string, bono_type: 5 | 10) =>

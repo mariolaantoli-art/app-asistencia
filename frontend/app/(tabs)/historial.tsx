@@ -121,7 +121,10 @@ export default function HistorialScreen() {
                   <Text style={styles.rowName} numberOfLines={1}>
                     {a.student_name}
                   </Text>
-                  <Text style={styles.rowTime}>{formatTime(a.created_at)}</Text>
+                  <Text style={styles.rowTime}>
+                    {formatTime(a.created_at)}
+                    {a.source === "alumno" ? " · registrado por el alumno" : ""}
+                  </Text>
                 </View>
                 <Pressable
                   onPress={() => onUndoPress(a.id)}

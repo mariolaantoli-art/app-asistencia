@@ -1,0 +1,44 @@
+{
+  "summary": "Iteration 4: tested day status (festivo/suspendida/normal) and student self check-in with a 4-digit code. Backend: 12/12 pytest pass, covering PUT /api/class-days (200/400/409/422/401), the cancelled map, admin and public attendance rejected on cancelled days, public search (min 3 chars, max 10, only id+name, regex-safe), /public/me balances + available_days (past days only, cancelled days excluded), public attendance (future 400, Monday 400, duplicate 409, no classes 400, success decrements and source='alumno'), wrong code 401, and lockout after 5 failures per student and per IP (429, spoofed XFF does not bypass; backend restarted after). All 57 real students have 4-digit codes. Frontend (375x667): /bienvenida -> /mi-clase works end to end: search, no-results, wrong code error clears the input, balance, day chips (festivo 2026-11-03 excluded), register success updates balance and removes the chip, checkin-no-bono for a student with 0 classes, exit. Alumnos: day-options modal works; festivo/suspendida show the banner, a struck-through greyed chip and a disabled 'Sin clase' button; back to normal works; the 409 error toast shows on a day with attendances; student-code-value shows the correct code; Historial shows '· registrado por el alumno'. No deprecated Expo packages found.",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "POST /api/public/me, /api/public/attendance", "issue": "The per-IP code lockout (5 failures / 15 min) is shared by every student behind the same public IP (gym WiFi/NAT). Five typos from any students together block self check-in for the whole class for 15 minutes. Consider a higher per-IP threshold (e.g. 20-30) and keep the per-student limit at 5."},
+      {"endpoint": "POST /api/public/me", "issue": "Anyone can lock a specific student out for 15 min by entering 5 wrong codes for them (DoS). Low risk, but worth knowing."},
+      {"endpoint": "PUT /api/class-days/{date}", "issue": "Not atomic: it counts attendances, then sets the status. An attendance registered at the same moment can end up on a day marked festivo. Low risk."},
+      {"endpoint": "GET /api/public/students", "issue": "Unauthenticated name lookup: anyone with the URL can list students' full names 3 letters at a time. This is by design but is a privacy consideration."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "mi-clase", "issues": ["checkin-no-bono warning box uses white text on orange (~2.2:1 contrast, below WCAG AA). Use dark text (onWarning dark) or a darker orange.", "Only the 12 most recent pending days are shown. Older unregistered days cannot be reached (acceptable, but note it)."]},
+      {"screen": "Alumnos", "issues": ["Long list (57+ students) has no search/filter, so the monitor has to scroll a lot to find a student.", "'Sin clase'/'Sin bono' disabled buttons: white text on light grey has low contrast."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_iter4_daystatus_student_checkin.py",
+    "/app/backend/tests/test_iter4_code_lockout.py",
+    "/app/test_reports/pytest/pytest_iter4.xml"
+  ],
+  "action_items": [
+    "Optional: raise the per-IP code-failure threshold (students share the gym IP) and keep per-student = 5",
+    "Optional: improve contrast of the orange warning box in mi-clase (checkin-no-bono)",
+    "Code health: split app/(tabs)/index.tsx (846 lines > 700) into components (StudentCard, DayOptionsModal, AddStudentModal, RenewBonoModal)"
+  ],
+  "critical_code_review_comments": [
+    "app/(tabs)/index.tsx is 846 lines. Split it into modules.",
+    "todayYMD() in src/utils/dates.ts uses the device timezone while the backend uses Europe/Madrid. The 'Hoy' label/default day can differ for devices outside Spain (minor).",
+    "set_day_status check-then-upsert is not transactional (low-risk race).",
+    "public_search_students imports re inside the function. Move it to module level."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter4_daystatus_student_checkin.py", "/app/backend/tests/test_iter4_code_lockout.py"],
+  "success_rate": {"backend": "100%", "frontend": "100%"},
+  "seed_data_creation": "Created TEST_It4_* / TEST_It4L_* / TEST_UIAlumnoA / TEST_UIAlumnoB students. All were deleted by id; attendances were cascade-deleted. Days 2026-10-01, 2026-10-13, 2026-11-12 and 2027-05-04 were set back to 'normal'. The cancelled map is unchanged ({'2026-11-03': 'festivo'}, pre-existing, not touched). Backend restarted to clear lockouts. Note: real student LAURA GARCÍA VIVANCOS has 4 classes and a 2026-11-05 'alumno' attendance from before this run, so not all real students are at 0. I did not modify her.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Server date 2026-11-09 (Mon). The lockout test leaves the IP locked, so restart the backend after running test_iter4_code_lockout.py. The Alumnos FlatList is virtualized: scroll (mouse.wheel) to render TEST_ students at the end. Login: /acceso admin-pin-input + admin-login-btn.",
+  "rca_of_issue": ""
+}

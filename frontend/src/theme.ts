@@ -28,6 +28,8 @@ const light = {
   onSuccess: "#FFFFFF",
   warning: "#FF9500",
   onWarning: "#FFFFFF",
+  warningSoft: "#FFF1DC",
+  onWarningSoft: "#8A4B00",
   error: "#FF3B30",
   onError: "#FFFFFF",
   info: "#6B7280",
