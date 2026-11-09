@@ -1,0 +1,45 @@
+{
+  "summary": "Backend: 25/25 pytest pass (students CRUD, bono 5/10 validation, renew, attendance Tue/Thu + range validation, 409 duplicate, 400 at 0 classes, undo restore, delete cascades attendance, monthly summary 4€=2+2, class-days). Concurrency spot-check: no duplicate/negative balances observed. Frontend (375x667): default day = Jue 5 nov (correct for Mon 9 Nov), day chips switch, add student (bono 5) -> 5 clases/10€, register -> 4 clases/8€ + 'Asistió' disabled, per-day state correct, renew +5, Historial grouped by date with Deshacer restoring balance, Resumen month chips & totals (4.00€ / 2+2) and per-student items, delete with confirm modal. All flows working. Main real bug: attendance time shown in Historial will be wrong for users outside UTC (naive datetime from Mongo).",
+  "backend_issues": {
+    "critical": [],
+    "minor": [
+      {"endpoint": "GET /api/attendance, GET /api/students", "issue": "created_at returned without timezone (e.g. '2026-11-09T19:02:44.596000', no Z/+00:00) because Motor returns naive datetimes. Frontend formatTime() parses it as LOCAL time -> in Spain (UTC+1/+2) Historial shows the time 1-2h early. Fix: AsyncIOMotorClient(mongo_url, tz_aware=True) or serialize with explicit UTC offset."},
+      {"endpoint": "GET /api/attendance", "issue": "Default limit=500 and frontend calls it without params; with ~20 students x 78 class days (~1500 records) older 'Asistió' states and Historial entries will silently disappear. Consider filtering by class_date or paginating."},
+      {"endpoint": "POST /api/attendance", "issue": "Duplicate check + decrement are non-atomic and there is no unique index on (student_id, class_date); a race could double-register/go negative. Not reproduced with 10 concurrent requests, but add unique compound index and conditional update (classes_remaining > 0)."},
+      {"endpoint": "POST /api/attendance", "issue": "When class_date omitted it uses server date.today() (UTC) instead of the client's day."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Historial row time", "issue": "Time displayed via new Date(naive ISO) -> wrong hour for non-UTC devices (see backend minor issue).", "testID": "attendance-{id}", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Historial", "issues": ["Deshacer fires immediately with no confirmation and no onError handler/toast; accidental taps remove attendance silently, failures are silent."]},
+      {"screen": "Resumen", "issues": ["Pluralization: '1 asistencias' should be '1 asistencia'."]},
+      {"screen": "Tab bar (web preview)", "issues": ["Bottom tab labels appear slightly clipped at bottom in 375x667 web preview."]},
+      {"screen": "Add student / Renew modal", "issues": ["Bottom sheet does not add insets.bottom padding; action buttons sit close to the home indicator on iPhone."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_asistencia_api.py", "/app/backend/tests/race_check.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "Make datetimes timezone-aware (AsyncIOMotorClient(..., tz_aware=True)) so created_at serializes with +00:00 and Historial shows correct local time",
+    "Add confirmation (or undo toast) + onError handling for Deshacer in historial.tsx",
+    "Add unique index on attendance (student_id, class_date) and atomic conditional decrement",
+    "Avoid 500-record limit for attendance list used by Alumnos 'Asistió' state (query by class_date)",
+    "Fix '1 asistencias' pluralization in resumen.tsx"
+  ],
+  "critical_code_review_comments": [
+    "server.py: renew overwrites bono_type with the latest renewal type (fine, but bono_type then no longer reflects initial bono)",
+    "index.tsx is 645 lines; consider splitting modals (AddStudentModal, RenewBonoModal) into components",
+    "No deprecated Expo packages (expo-av/barcode-scanner/background-fetch) found; safe-area handled via useSafeAreaInsets"
+  ],
+  "updated_files": ["/app/backend/tests/test_asistencia_api.py", "/app/backend/tests/race_check.py"],
+  "success_rate": {"backend": "100%", "frontend": "100% of tested flows"},
+  "seed_data_creation": "None. TEST_ students created and deleted by id; seed María García (10/20€) and Juan Pérez (5/10€) verified unchanged, attendance collection empty after tests.",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Server date 2026-11-09 (Mon). Run: EXPO_PUBLIC_BACKEND_URL=<frontend/.env> pytest /app/backend/tests/test_asistencia_api.py. Modals slide in - wait ~1.5s after opening before clicking. Frontend env var is EXPO_PUBLIC_BACKEND_URL.",
+  "rca_of_issue": "Wrong Historial time: Motor default tz_aware=False returns naive UTC datetimes; Pydantic serializes them without offset; JS Date treats offset-less ISO datetime as local time."
+}

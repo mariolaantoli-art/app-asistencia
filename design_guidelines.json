@@ -1,0 +1,140 @@
+{
+  "app_name": "AsistenciaFuncional",
+  "personality": "1 iOS-Native Clean",
+  "personality_one_liner": "A clean, utilitarian, and fast iOS-native tracker focused on rapid data entry and clear financial summaries.",
+  "color": {
+    "surface": "#F2F2F7",
+    "onSurface": "#000000",
+    "surfaceSecondary": "#FFFFFF",
+    "onSurfaceSecondary": "#000000",
+    "surfaceTertiary": "#E5E5EA",
+    "onSurfaceTertiary": "#000000",
+    "surfaceInverse": "#1C1C1E",
+    "onSurfaceInverse": "#FFFFFF",
+    "brand": "#248A3D",
+    "brandPrimary": "#248A3D",
+    "onBrandPrimary": "#FFFFFF",
+    "brandSecondary": "#1A642B",
+    "onBrandSecondary": "#FFFFFF",
+    "brandTertiary": "#E4F3E8",
+    "onBrandTertiary": "#1A642B",
+    "success": "#34C759",
+    "onSuccess": "#FFFFFF",
+    "warning": "#FF9500",
+    "onWarning": "#FFFFFF",
+    "error": "#FF3B30",
+    "onError": "#FFFFFF",
+    "info": "#6B7280",
+    "onInfo": "#FFFFFF",
+    "border": "#C6C6C8",
+    "borderStrong": "#AEAEB2",
+    "divider": "#E5E5EA",
+    "muted": "#8E8E93"
+  },
+  "typography": {
+    "displayFontFamily": "Geist",
+    "textFontFamily": "Geist",
+    "scale": {
+      "sm": 12,
+      "base": 14,
+      "lg": 16,
+      "xl": 20,
+      "2xl": 24
+    }
+  },
+  "spacing": {
+    "rule": "Use iOS native rhythms. Generous outer padding for screens (lg to xl). Maintain tight grouping within list rows. Avoid extra spaces where not needed.",
+    "xs": 4,
+    "sm": 8,
+    "md": 12,
+    "lg": 16,
+    "xl": 24,
+    "2xl": 32,
+    "3xl": 48
+  },
+  "radius_tokens": {
+    "sm": 6,
+    "md": 12,
+    "lg": 20,
+    "pill": 999
+  },
+  "shadow_tier": "1",
+  "navigation": "bottom_tabs",
+  "icon_set": "Ionicons",
+  "glassmorphism": {
+    "enabled": "true",
+    "do's": [
+      "Use on bottom tab bar when content scrolls behind it",
+      "Use on floating action buttons (FAB)",
+      "Use on sticky headers over scrolling lists"
+    ],
+    "dont's": [
+      "Do not use on generic list rows or normal cards",
+      "Do not use on form fields"
+    ]
+  },
+  "platform_libraries": {
+    "glass": {
+      "ios": "expo-glass-effect",
+      "android": "expo-blur",
+      "low_end_android_fallback": "solid surfaceSecondary"
+    },
+    "image": "expo-image",
+    "blur": "expo-blur",
+    "bottom_sheet": "@gorhom/bottom-sheet",
+    "animation": "react-native-reanimated",
+    "gesture": "react-native-gesture-handler"
+  },
+  "screens": [
+    {
+      "name": "Alumnos",
+      "purpose": "List students and register their attendance instantly.",
+      "states": {
+        "loading": "Centered spinner",
+        "empty": "Illustration of empty clipboard with 'No hay alumnos. Añade uno para empezar.' and primary FAB call to action.",
+        "error": "Message 'Error al cargar alumnos' + Retry button"
+      },
+      "layout": "Stacked list layout. Each row is a surfaceSecondary card showing Student Name and a badge indicating remaining classes. On the right side, an interactive green button 'Registrar' (using brandPrimary). A floating action button (FAB) in the bottom right corner for adding new students. Bottom tab bar at the root."
+    },
+    {
+      "name": "Historial",
+      "purpose": "View attendance records categorized by date and allow undoing actions.",
+      "states": {
+        "loading": "Centered spinner",
+        "empty": "Illustration of clipboard with 'No hay registros de asistencia aún.'",
+        "error": "Message 'Error al cargar historial' + Retry button"
+      },
+      "layout": "SectionList grouped by Date (e.g., 'Martes, 15 Oct'). Each row shows the student name, time, and a 'Deshacer' (Undo) text button using muted or error color. Scrollable list with sticky section headers using glassmorphism."
+    },
+    {
+      "name": "Resumen",
+      "purpose": "Monthly dashboard for financial control.",
+      "states": {
+        "loading": "Centered spinner",
+        "empty": "Illustration with 'Sin datos para este mes.'",
+        "error": "Message 'Error al cargar resumen' + Retry button"
+      },
+      "layout": "Top-level KPI summary card using the gym class image with a vertical gradient scrim overlay and white text. It displays 'Total Mensual' (Total classes * 4€). Below it, a grid or list of per-student cards detailing their individual cost contributions for the selected month."
+    }
+  ],
+  "images": {
+    "empty_state_clipboard": {
+      "url": "https://images.unsplash.com/photo-1743385779431-45d26d9775b1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzMzJ8MHwxfHNlYXJjaHwzfHxlbXB0eSUyMGNsaXBib2FyZCUyMGRlc2t8ZW58MHx8fHwxNzk0MjUwNTYxfDA&ixlib=rb-4.1.0&q=85",
+      "alt": "Empty clipboard on a wooden desk"
+    },
+    "hero_dashboard_gym": {
+      "url": "https://images.unsplash.com/photo-1534258936925-c58bed479fcb?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODd8MHwxfHNlYXJjaHwyfHxmdW5jdGlvbmFsJTIwdHJhaW5pbmclMjBneW0lMjBjbGFzc3xlbnwwfHx8fDE3OTQyNTA1NjF8MA&ixlib=rb-4.1.0&q=85",
+      "alt": "People exercising in a functional training gym class"
+    }
+  },
+  "instructions_to_main_agent": [
+    "Strictly use the 'brandPrimary' (#248A3D) color for the 'Registrar Asistencia' button to fulfill the user's explicit request.",
+    "Implement a 'Stacked List' pattern for the Alumnos screen where the attendance button is prominently accessible without opening a details page.",
+    "Bono logic: 10€ = 5 classes, 20€ = 10 clases. Cost per class is logically 2€. Display remaining classes dynamically (e.g., '3 clases restantes').",
+    "Financial calculation on Resumen: Each class registered equals 4€ total revenue (2€ paid by student + 2€ subsidized by the ayuntamiento). Keep this logic isolated in the dashboard calculation.",
+    "Ensure 'Historial' lists records grouped by date (Tuesdays and Thursdays) and provides a clear 'Undo' action.",
+    "Do not use blue, purple, or indigo anywhere. The primary accent is the requested green.",
+    "Add a gradient scrim over the 'hero_dashboard_gym' image on the Resumen screen to ensure text readability (transparent to ≥70% surfaceInverse).",
+    "Use Haptic feedback (Impact/Light) when tapping 'Registrar Asistencia'."
+  ]
+}

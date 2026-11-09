@@ -1,0 +1,647 @@
+import React, { useMemo, useState } from "react";
+import {
+  ActivityIndicator,
+  FlatList,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  RefreshControl,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import * as Haptics from "expo-haptics";
+import Ionicons from "@react-native-vector-icons/ionicons";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+
+import { api, Student } from "@/src/api";
+import { makeStyles, useTheme, spacing, radius } from "@/src/theme";
+import { defaultClassDay, formatLongDate, formatShortDate, todayYMD } from "@/src/utils/dates";
+
+const DAY_CHIP_W = 96;
+
+export default function AlumnosScreen() {
+  const insets = useSafeAreaInsets();
+  const { colors } = useTheme();
+  const styles = useStyles();
+  const sheetInsets = useSafeAreaInsets();
+  const qc = useQueryClient();
+
+  const [showAdd, setShowAdd] = useState(false);
+  const [showRenew, setShowRenew] = useState<Student | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<Student | null>(null);
+  const [toast, setToast] = useState<{ msg: string; type: "ok" | "err" } | null>(null);
+
+  const studentsQuery = useQuery({
+    queryKey: ["students"],
+    queryFn: api.listStudents,
+  });
+  const daysQuery = useQuery({ queryKey: ["class-days"], queryFn: api.classDays });
+  const attendanceQuery = useQuery({ queryKey: ["attendance"], queryFn: api.listAttendance });
+  const days = useMemo(() => daysQuery.data?.days ?? [], [daysQuery.data]);
+  const [pickedDay, setPickedDay] = useState<string | undefined>();
+  const selectedDay = pickedDay ?? defaultClassDay(days);
+
+  const attendedIds = useMemo(() => {
+    const set = new Set<string>();
+    for (const a of attendanceQuery.data ?? []) if (a.class_date === selectedDay) set.add(a.student_id);
+    return set;
+  }, [attendanceQuery.data, selectedDay]);
+
+  const registerMut = useMutation({
+    mutationFn: (studentId: string) => api.registerAttendance(studentId, selectedDay),
+    onSuccess: (att) => {
+      Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+      qc.invalidateQueries({ queryKey: ["students"] });
+      qc.invalidateQueries({ queryKey: ["attendance"] });
+      qc.invalidateQueries({ queryKey: ["summary"] });
+      showToast(`Asistencia registrada: ${att.student_name}`, "ok");
+    },
+    onError: (e: Error) => {
+      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+      showToast(e.message, "err");
+    },
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => api.deleteStudent(id),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["students"] });
+      qc.invalidateQueries({ queryKey: ["attendance"] });
+      qc.invalidateQueries({ queryKey: ["summary"] });
+      showToast("Alumno eliminado", "ok");
+    },
+    onError: (e: Error) => showToast(e.message, "err"),
+  });
+
+  function showToast(msg: string, type: "ok" | "err") {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 2200);
+  }
+
+  const today = todayYMD();
+  const students = studentsQuery.data ?? [];
+  const selectedIndex = selectedDay ? days.indexOf(selectedDay) : -1;
+
+  return (
+    <View style={[styles.container, { paddingTop: insets.top }]}>
+      <View style={styles.header} testID="alumnos-header">
+        <Text style={styles.headerTitle}>Alumnos</Text>
+        <Text style={styles.headerSubtitle} testID="selected-class-day">
+          {selectedDay ? `Clase: ${formatLongDate(selectedDay)}${selectedDay === today ? " (hoy)" : ""}` : "Cargando días de clase…"}
+        </Text>
+      </View>
+
+      <View style={styles.daysRow}>
+        {days.length > 0 && (
+          <FlatList
+            data={days}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            keyExtractor={(d) => d}
+            initialScrollIndex={selectedIndex > 2 ? selectedIndex - 2 : 0}
+            getItemLayout={(_, index) => ({ length: DAY_CHIP_W + spacing.sm, offset: (DAY_CHIP_W + spacing.sm) * index, index })}
+            contentContainerStyle={{ paddingHorizontal: spacing.lg }}
+            renderItem={({ item }) => {
+              const active = item === selectedDay;
+              return (
+                <Pressable
+                  onPress={() => setPickedDay(item)}
+                  style={[styles.dayChip, active && styles.dayChipActive]}
+                  testID={`class-day-${item}`}
+                >
+                  <Text style={[styles.dayChipText, active && styles.dayChipTextActive]}>{formatShortDate(item)}</Text>
+                </Pressable>
+              );
+            }}
+          />
+        )}
+      </View>
+
+      {studentsQuery.isLoading ? (
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.brandPrimary} />
+        </View>
+      ) : students.length === 0 ? (
+        <ScrollView
+          contentContainerStyle={styles.emptyWrap}
+          refreshControl={
+            <RefreshControl refreshing={studentsQuery.isFetching} onRefresh={() => studentsQuery.refetch()} />
+          }
+        >
+          <View style={styles.emptyIcon}>
+            <Ionicons name="clipboard-outline" size={56} color={colors.muted} />
+          </View>
+          <Text style={styles.emptyTitle}>No hay alumnos</Text>
+          <Text style={styles.emptyText}>Añade uno para empezar a registrar asistencias.</Text>
+        </ScrollView>
+      ) : (
+        <FlatList
+          data={students}
+          keyExtractor={(s) => s.id}
+          contentContainerStyle={{ paddingHorizontal: spacing.lg, paddingTop: spacing.sm, paddingBottom: 140 }}
+          ItemSeparatorComponent={() => <View style={{ height: spacing.sm }} />}
+          refreshControl={
+            <RefreshControl refreshing={studentsQuery.isFetching} onRefresh={() => studentsQuery.refetch()} />
+          }
+          renderItem={({ item }) => (
+            <StudentRow
+              student={item}
+              onRegister={() => registerMut.mutate(item.id)}
+              attended={attendedIds.has(item.id)}
+              busy={registerMut.isPending && registerMut.variables === item.id}
+              onDelete={() => setConfirmDelete(item)}
+              onRenew={() => setShowRenew(item)}
+            />
+          )}
+        />
+      )}
+
+      <Pressable
+        style={[styles.fab, { bottom: insets.bottom + spacing.lg }]}
+        onPress={() => setShowAdd(true)}
+        testID="add-student-fab"
+      >
+        <Ionicons name="add" size={28} color={colors.onBrandPrimary} />
+      </Pressable>
+
+      <AddStudentModal visible={showAdd} onClose={() => setShowAdd(false)} onDone={() => showToast("Alumno añadido", "ok")} />
+      <RenewBonoModal student={showRenew} onClose={() => setShowRenew(null)} onDone={() => showToast("Bono renovado", "ok")} />
+
+      <Modal visible={!!confirmDelete} transparent animationType="fade" onRequestClose={() => setConfirmDelete(null)}>
+        <View style={styles.modalWrap}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setConfirmDelete(null)} />
+          <View style={[styles.modalSheet, { paddingBottom: sheetInsets.bottom + spacing.xl }]} testID="confirm-delete-modal">
+            <Text style={styles.sheetTitle}>¿Eliminar a {confirmDelete?.name}?</Text>
+            <Text style={styles.helper}>Se borrará también todo su historial de asistencias.</Text>
+            <View style={styles.sheetActions}>
+              <Pressable style={styles.secondaryBtn} onPress={() => setConfirmDelete(null)} testID="cancel-delete-student">
+                <Text style={styles.secondaryBtnText}>Cancelar</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primaryBtn, { backgroundColor: colors.error }]}
+                onPress={() => {
+                  if (confirmDelete) deleteMut.mutate(confirmDelete.id);
+                  setConfirmDelete(null);
+                }}
+                testID="confirm-delete-student"
+              >
+                <Text style={styles.primaryBtnText}>Eliminar</Text>
+              </Pressable>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {toast && (
+        <View
+          style={[
+            styles.toast,
+            { bottom: insets.bottom + 90, backgroundColor: toast.type === "ok" ? colors.success : colors.error },
+          ]}
+          pointerEvents="none"
+          testID="toast"
+        >
+          <Text style={styles.toastText}>{toast.msg}</Text>
+        </View>
+      )}
+    </View>
+  );
+}
+
+function StudentRow({
+  student,
+  onRegister,
+  attended,
+  busy,
+  onDelete,
+  onRenew,
+}: {
+  student: Student;
+  onRegister: () => void;
+  attended: boolean;
+  busy: boolean;
+  onDelete: () => void;
+  onRenew: () => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useStyles();
+  const low = student.classes_remaining <= 0;
+
+  return (
+    <View style={styles.card} testID={`student-row-${student.id}`}>
+      <View style={styles.cardLeft}>
+        <Text style={styles.studentName} numberOfLines={1}>
+          {student.name}
+        </Text>
+        <View style={styles.badgesRow}>
+          <View style={[styles.badge, low ? styles.badgeDanger : styles.badgeInfo]}>
+            <Ionicons name="ticket-outline" size={13} color={low ? colors.error : colors.brandSecondary} />
+            <Text style={[styles.badgeText, { color: low ? colors.error : colors.brandSecondary }]}>
+              {student.classes_remaining} {student.classes_remaining === 1 ? "clase" : "clases"}
+            </Text>
+          </View>
+          <View style={[styles.badge, styles.badgeMoney]}>
+            <Text style={[styles.badgeText, { color: colors.onSurfaceTertiary }]}>{student.money_remaining.toFixed(0)} €</Text>
+          </View>
+        </View>
+      </View>
+
+      <View style={styles.cardActions}>
+        <Pressable
+          onPress={onRegister}
+          disabled={busy || low || attended}
+          style={({ pressed }) => [
+            styles.registerBtn,
+            (low || attended) && styles.registerBtnDisabled,
+            pressed && !low && styles.registerBtnPressed,
+          ]}
+          testID={`register-attendance-${student.id}`}
+        >
+          {busy ? (
+            <ActivityIndicator color={colors.onBrandPrimary} size="small" />
+          ) : attended ? (
+            <>
+              <Ionicons name="checkmark-done" size={16} color={colors.onBrandPrimary} />
+              <Text style={styles.registerBtnText}>Asistió</Text>
+            </>
+          ) : low ? (
+            <Text style={styles.registerBtnText}>Sin bono</Text>
+          ) : (
+            <>
+              <Ionicons name="checkmark-circle" size={16} color={colors.onBrandPrimary} />
+              <Text style={styles.registerBtnText}>Registrar Asistencia</Text>
+            </>
+          )}
+        </Pressable>
+        <View style={styles.smallActionsRow}>
+          <Pressable
+            onPress={onRenew}
+            style={styles.iconBtn}
+            testID={`renew-bono-${student.id}`}
+            hitSlop={8}
+          >
+            <Ionicons name="refresh" size={18} color={colors.brandSecondary} />
+          </Pressable>
+          <Pressable onPress={onDelete} style={styles.iconBtn} testID={`delete-student-${student.id}`} hitSlop={8}>
+            <Ionicons name="trash-outline" size={18} color={colors.error} />
+          </Pressable>
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function AddStudentModal({
+  visible,
+  onClose,
+  onDone,
+}: {
+  visible: boolean;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useStyles();
+  const sheetInsets = useSafeAreaInsets();
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [bono, setBono] = useState<5 | 10>(10);
+  const [err, setErr] = useState<string | null>(null);
+
+  const mut = useMutation({
+    mutationFn: () => api.createStudent(name.trim(), bono),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["students"] });
+      setName("");
+      setBono(10);
+      setErr(null);
+      onDone();
+      onClose();
+    },
+    onError: (e: Error) => setErr(e.message),
+  });
+
+  return (
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+      <KeyboardAvoidingView
+        style={styles.modalWrap}
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={onClose} />
+        <View style={[styles.modalSheet, { paddingBottom: sheetInsets.bottom + spacing.xl }]} testID="add-student-modal">
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>Nuevo alumno</Text>
+
+          <Text style={styles.label}>Nombre</Text>
+          <TextInput
+            value={name}
+            onChangeText={setName}
+            placeholder="Ej. María García"
+            placeholderTextColor={colors.muted}
+            style={styles.input}
+            autoFocus
+            testID="student-name-input"
+          />
+
+          <Text style={styles.label}>Bono inicial</Text>
+          <View style={styles.bonoRow}>
+            <BonoOption value={5} selected={bono === 5} onPress={() => setBono(5)} testID="bono-option-5" />
+            <BonoOption value={10} selected={bono === 10} onPress={() => setBono(10)} testID="bono-option-10" />
+          </View>
+
+          {err && <Text style={styles.errText}>{err}</Text>}
+
+          <View style={styles.sheetActions}>
+            <Pressable style={styles.secondaryBtn} onPress={onClose} testID="cancel-add-student">
+              <Text style={styles.secondaryBtnText}>Cancelar</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryBtn, (!name.trim() || mut.isPending) && { opacity: 0.6 }]}
+              disabled={!name.trim() || mut.isPending}
+              onPress={() => mut.mutate()}
+              testID="save-student-btn"
+            >
+              {mut.isPending ? (
+                <ActivityIndicator color={colors.onBrandPrimary} />
+              ) : (
+                <Text style={styles.primaryBtnText}>Añadir</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </KeyboardAvoidingView>
+    </Modal>
+  );
+}
+
+function RenewBonoModal({
+  student,
+  onClose,
+  onDone,
+}: {
+  student: Student | null;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { colors } = useTheme();
+  const styles = useStyles();
+  const sheetInsets = useSafeAreaInsets();
+  const qc = useQueryClient();
+  const [bono, setBono] = useState<5 | 10>(10);
+  const [err, setErr] = useState<string | null>(null);
+
+  const mut = useMutation({
+    mutationFn: () => api.renewBono(student!.id, bono),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["students"] });
+      setErr(null);
+      onDone();
+      onClose();
+    },
+    onError: (e: Error) => setErr(e.message),
+  });
+
+  return (
+    <Modal visible={!!student} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={styles.modalWrap}>
+        <Pressable style={styles.modalBackdrop} onPress={onClose} />
+        <View style={[styles.modalSheet, { paddingBottom: sheetInsets.bottom + spacing.xl }]} testID="renew-bono-modal">
+          <View style={styles.sheetHandle} />
+          <Text style={styles.sheetTitle}>Renovar bono</Text>
+          <Text style={[styles.label, { marginTop: 0 }]}>{student?.name}</Text>
+          <Text style={styles.helper}>Las clases se sumarán al saldo actual.</Text>
+
+          <View style={styles.bonoRow}>
+            <BonoOption value={5} selected={bono === 5} onPress={() => setBono(5)} testID="renew-bono-5" />
+            <BonoOption value={10} selected={bono === 10} onPress={() => setBono(10)} testID="renew-bono-10" />
+          </View>
+
+          {err && <Text style={styles.errText}>{err}</Text>}
+
+          <View style={styles.sheetActions}>
+            <Pressable style={styles.secondaryBtn} onPress={onClose} testID="cancel-renew">
+              <Text style={styles.secondaryBtnText}>Cancelar</Text>
+            </Pressable>
+            <Pressable
+              style={[styles.primaryBtn, mut.isPending && { opacity: 0.6 }]}
+              disabled={mut.isPending}
+              onPress={() => mut.mutate()}
+              testID="confirm-renew"
+            >
+              {mut.isPending ? (
+                <ActivityIndicator color={colors.onBrandPrimary} />
+              ) : (
+                <Text style={styles.primaryBtnText}>Renovar</Text>
+              )}
+            </Pressable>
+          </View>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+function BonoOption({
+  value,
+  selected,
+  onPress,
+  testID,
+}: {
+  value: 5 | 10;
+  selected: boolean;
+  onPress: () => void;
+  testID: string;
+}) {
+  const { colors } = useTheme();
+  const styles = useStyles();
+  return (
+    <Pressable onPress={onPress} testID={testID} style={[styles.bonoCard, selected && styles.bonoCardSelected]}>
+      <Text style={[styles.bonoAmount, selected && { color: colors.onBrandPrimary }]}>{value === 5 ? "10 €" : "20 €"}</Text>
+      <Text style={[styles.bonoClasses, selected && { color: colors.onBrandPrimary }]}>
+        {value} clases
+      </Text>
+    </Pressable>
+  );
+}
+
+const useStyles = makeStyles((colors) => ({
+  container: { flex: 1, backgroundColor: colors.surface },
+  header: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.lg,
+    paddingBottom: spacing.md,
+  },
+  headerTitle: { fontSize: 32, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
+  headerSubtitle: { marginTop: 4, fontSize: 14, color: colors.muted, fontWeight: "500" },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
+  daysRow: { height: 56, justifyContent: "center" },
+  dayChip: {
+    width: DAY_CHIP_W,
+    height: 36,
+    marginRight: spacing.sm,
+    borderRadius: radius.pill,
+    backgroundColor: colors.surfaceSecondary,
+    borderWidth: 1,
+    borderColor: colors.divider,
+    alignItems: "center",
+    justifyContent: "center",
+    flexShrink: 0,
+  },
+  dayChipActive: { backgroundColor: colors.brandPrimary, borderColor: colors.brandSecondary },
+  dayChipText: { fontSize: 13, fontWeight: "600", color: colors.onSurfaceSecondary },
+  dayChipTextActive: { color: colors.onBrandPrimary },
+  emptyWrap: { flexGrow: 1, alignItems: "center", justifyContent: "center", padding: spacing.xl },
+  emptyIcon: {
+    width: 96,
+    height: 96,
+    borderRadius: 48,
+    backgroundColor: colors.surfaceTertiary,
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: spacing.lg,
+  },
+  emptyTitle: { fontSize: 20, fontWeight: "700", color: colors.onSurface },
+  emptyText: { marginTop: 6, fontSize: 14, color: colors.muted, textAlign: "center" },
+
+  card: {
+    backgroundColor: colors.surfaceSecondary,
+    borderRadius: radius.lg,
+    padding: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
+  },
+  cardLeft: { flex: 1, marginRight: spacing.md },
+  studentName: { fontSize: 17, fontWeight: "700", color: colors.onSurfaceSecondary },
+  badgesRow: { flexDirection: "row", marginTop: 6, gap: 6, flexWrap: "wrap" },
+  badge: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: radius.pill,
+  },
+  badgeInfo: { backgroundColor: colors.brandTertiary },
+  badgeDanger: { backgroundColor: "#FEE2E2" },
+  badgeMoney: { backgroundColor: colors.surfaceTertiary },
+  badgeText: { fontSize: 12, fontWeight: "600" },
+
+  cardActions: { alignItems: "flex-end", gap: 6 },
+  registerBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    backgroundColor: colors.brandPrimary,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    minWidth: 120,
+    justifyContent: "center",
+  },
+  registerBtnPressed: { backgroundColor: colors.brandSecondary },
+  registerBtnDisabled: { backgroundColor: colors.borderStrong },
+  registerBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 14 },
+  smallActionsRow: { flexDirection: "row", gap: 2 },
+  iconBtn: { padding: 6 },
+
+  fab: {
+    position: "absolute",
+    right: spacing.lg,
+    width: 56,
+    height: 56,
+    borderRadius: 28,
+    backgroundColor: colors.brandPrimary,
+    alignItems: "center",
+    justifyContent: "center",
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    elevation: 6,
+  },
+
+  toast: {
+    position: "absolute",
+    alignSelf: "center",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: radius.md,
+    maxWidth: "90%",
+  },
+  toastText: { color: "#FFFFFF", fontWeight: "600", fontSize: 14 },
+
+  // Modal
+  modalWrap: { flex: 1, justifyContent: "flex-end" },
+  modalBackdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.4)" },
+  modalSheet: {
+    backgroundColor: colors.surfaceSecondary,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    padding: spacing.lg,
+    paddingBottom: spacing.xl,
+  },
+  sheetHandle: {
+    alignSelf: "center",
+    width: 42,
+    height: 5,
+    borderRadius: 3,
+    backgroundColor: colors.borderStrong,
+    marginBottom: spacing.md,
+  },
+  sheetTitle: { fontSize: 20, fontWeight: "700", color: colors.onSurface, marginBottom: spacing.md },
+  label: { fontSize: 13, fontWeight: "600", color: colors.muted, marginTop: spacing.md, marginBottom: 6 },
+  helper: { fontSize: 13, color: colors.muted, marginBottom: spacing.sm },
+  input: {
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 16,
+    color: colors.onSurface,
+  },
+  bonoRow: { flexDirection: "row", gap: spacing.sm, marginTop: 4 },
+  bonoCard: {
+    flex: 1,
+    backgroundColor: colors.surfaceTertiary,
+    borderRadius: radius.md,
+    padding: spacing.md,
+    alignItems: "center",
+    borderWidth: 2,
+    borderColor: "transparent",
+  },
+  bonoCardSelected: {
+    backgroundColor: colors.brandPrimary,
+    borderColor: colors.brandSecondary,
+  },
+  bonoAmount: { fontSize: 22, fontWeight: "800", color: colors.onSurface },
+  bonoClasses: { fontSize: 13, fontWeight: "600", color: colors.muted, marginTop: 2 },
+
+  errText: { color: colors.error, fontSize: 13, marginTop: spacing.sm, fontWeight: "500" },
+
+  sheetActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.lg },
+  secondaryBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: radius.md,
+    backgroundColor: colors.surfaceTertiary,
+    alignItems: "center",
+  },
+  secondaryBtnText: { color: colors.onSurface, fontWeight: "600", fontSize: 15 },
+  primaryBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: radius.md,
+    backgroundColor: colors.brandPrimary,
+    alignItems: "center",
+  },
+  primaryBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 15 },
+}));
