@@ -1,8 +1,62 @@
 import { Platform } from "react-native";
+import { router } from "expo-router";
+
+import { clearToken, getToken, setToken } from "@/src/auth";
+import { queryClient } from "@/src/query-client";
 
 const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export const API_BASE = `${BASE}/api`;
+
+export type Registration = {
+  id: string;
+  name: string;
+  phone: string;
+  email: string;
+  health_notes: string;
+  status: "pending" | "approved" | "rejected";
+  created_at: string;
+};
+
+async function errorDetail(res: Response): Promise<string> {
+  try {
+    const data = await res.json();
+    if (typeof data?.detail === "string") return data.detail;
+    if (Array.isArray(data?.detail)) return "Revisa los datos: email o teléfono no válidos";
+  } catch {}
+  return `Error ${res.status}`;
+}
+
+// Login y alta pública: no usan token ni redirigen en 401.
+export async function adminLogin(pin: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/auth/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ pin }),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res));
+  const data = await res.json();
+  await setToken(data.access_token);
+}
+
+export async function submitRegistration(input: {
+  name: string;
+  phone: string;
+  email: string;
+  health_notes: string;
+}): Promise<void> {
+  const res = await fetch(`${API_BASE}/registrations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res));
+}
+
+export async function logout(): Promise<void> {
+  await clearToken();
+  queryClient.clear();
+}
 
 export type Student = {
   id: string;
@@ -10,6 +64,9 @@ export type Student = {
   bono_type: 5 | 10;
   classes_remaining: number;
   money_remaining: number;
+  phone?: string;
+  email?: string;
+  health_notes?: string;
   created_at: string;
 };
 
@@ -41,20 +98,22 @@ export type MonthlySummary = {
 };
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = await getToken();
   const res = await fetch(`${API_BASE}${path}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {}),
     },
   });
+  if (res.status === 401) {
+    await clearToken();
+    queryClient.clear();
+    router.replace("/bienvenida");
+  }
   if (!res.ok) {
-    let msg = `HTTP ${res.status}`;
-    try {
-      const data = await res.json();
-      if (data?.detail) msg = typeof data.detail === "string" ? data.detail : JSON.stringify(data.detail);
-    } catch {}
-    throw new Error(msg);
+    throw new Error(await errorDetail(res));
   }
   return (await res.json()) as T;
 }
@@ -76,6 +135,11 @@ export const api = {
     request<MonthlySummary>(`/summary/monthly?year=${year}&month=${month}`),
 
   classDays: () => request<{ days: string[]; count: number }>("/class-days"),
+
+  listRegistrations: () => request<Registration[]>("/registrations"),
+  approveRegistration: (id: string, bono_type: 5 | 10) =>
+    request<Student>(`/registrations/${id}/approve`, { method: "POST", body: JSON.stringify({ bono_type }) }),
+  rejectRegistration: (id: string) => request<{ ok: boolean }>(`/registrations/${id}/reject`, { method: "POST" }),
 };
 
 export const isWeb = Platform.OS === "web";

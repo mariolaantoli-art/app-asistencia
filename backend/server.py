@@ -1,6 +1,11 @@
 import asyncio
+import hmac
+import time
+from collections import defaultdict, deque
 from contextlib import suppress
-from fastapi import FastAPI, APIRouter, HTTPException, Query
+import jwt
+from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -9,7 +14,7 @@ from pymongo.errors import DuplicateKeyError
 import os
 import logging
 from pathlib import Path
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, EmailStr
 from typing import List, Optional, Literal
 import uuid
 from datetime import datetime, timezone, date, timedelta
@@ -38,7 +43,16 @@ INDEXES: dict[str, list[IndexModel]] = {
         IndexModel([("class_date", DESCENDING)], name="class_date_desc"),
         IndexModel([("created_at", DESCENDING)], name="created_at_desc"),
     ],
+    "registrations": [
+        IndexModel([("id", ASCENDING)], name="id", unique=True),
+        IndexModel([("status", ASCENDING), ("created_at", DESCENDING)], name="status_created"),
+    ],
 }
+
+ADMIN_PIN = os.environ["ADMIN_PIN"]
+JWT_SECRET = os.environ["JWT_SECRET"]
+JWT_ALGORITHM = "HS256"
+JWT_EXPIRE_DAYS = 30
 
 
 async def ensure_indexes() -> None:
@@ -59,7 +73,150 @@ async def health():
     return {"status": "ok"}
 
 
-api_router = APIRouter(prefix="/api")
+# ============ AUTH (PIN del monitor) ============
+
+bearer = HTTPBearer(auto_error=False)
+
+_failures: dict[str, deque] = defaultdict(deque)
+_blocked_until: dict[str, float] = {}
+LOGIN_WINDOW = 15 * 60
+MAX_FAILURES = 5
+
+
+def _client_key(request: Request) -> str:
+    # El ingress AÑADE la IP real al final de X-Forwarded-For; las entradas de la izquierda
+    # las puede inventar el cliente, así que usamos la de la derecha.
+    fwd = request.headers.get("x-forwarded-for", "")
+    if fwd:
+        return fwd.split(",")[-1].strip()
+    return request.client.host if request.client else "unknown"
+
+
+# Tope global de PIN fallidos (todas las IPs): frena la fuerza bruta aunque se roten IPs.
+_global_failures: deque = deque()
+GLOBAL_MAX_FAILURES = 30
+
+
+def _global_locked() -> bool:
+    now = time.monotonic()
+    while _global_failures and _global_failures[0] <= now - LOGIN_WINDOW:
+        _global_failures.popleft()
+    return len(_global_failures) >= GLOBAL_MAX_FAILURES
+
+
+_reg_hits: dict[str, deque] = defaultdict(deque)
+REG_WINDOW = 60 * 60
+REG_MAX = 10
+
+
+def _check_registration_limit(key: str) -> None:
+    now = time.monotonic()
+    q = _reg_hits[key]
+    while q and q[0] <= now - REG_WINDOW:
+        q.popleft()
+    if len(q) >= REG_MAX:
+        raise HTTPException(status_code=429, detail="Demasiadas inscripciones enviadas. Prueba más tarde")
+    q.append(now)
+
+
+def _check_login_limit(key: str) -> int:
+    now = time.monotonic()
+    if _blocked_until.get(key, 0) > now:
+        return max(1, int(_blocked_until[key] - now))
+    q = _failures[key]
+    while q and q[0] <= now - LOGIN_WINDOW:
+        q.popleft()
+    return 0
+
+
+def _record_failure(key: str) -> None:
+    now = time.monotonic()
+    q = _failures[key]
+    q.append(now)
+    while q and q[0] <= now - LOGIN_WINDOW:
+        q.popleft()
+    if len(q) >= MAX_FAILURES:
+        _blocked_until[key] = now + LOGIN_WINDOW
+
+
+def _make_token() -> str:
+    now = datetime.now(timezone.utc)
+    payload = {"sub": "admin", "role": "admin", "iat": now, "exp": now + timedelta(days=JWT_EXPIRE_DAYS)}
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+
+async def require_admin(credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer)) -> dict:
+    if not credentials or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="No autenticado")
+    try:
+        payload = jwt.decode(credentials.credentials, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+        if payload.get("sub") != "admin" or payload.get("role") != "admin":
+            raise ValueError("claims")
+        return payload
+    except (jwt.InvalidTokenError, ValueError):
+        raise HTTPException(status_code=401, detail="Sesión caducada, vuelve a entrar")
+
+
+# Rutas públicas: login + inscripción. El resto exige PIN del monitor.
+public_router = APIRouter(prefix="/api")
+api_router = APIRouter(prefix="/api", dependencies=[Depends(require_admin)])
+
+
+class LoginBody(BaseModel):
+    pin: str = Field(min_length=4, max_length=32)
+
+
+@public_router.post("/auth/login")
+async def login(body: LoginBody, request: Request):
+    key = _client_key(request)
+    retry = _check_login_limit(key)
+    if retry or _global_locked():
+        raise HTTPException(
+            status_code=429,
+            detail="Demasiados intentos. Prueba de nuevo en unos minutos",
+            headers={"Retry-After": str(retry or LOGIN_WINDOW)},
+        )
+    if not hmac.compare_digest(body.pin.encode(), ADMIN_PIN.encode()):
+        _record_failure(key)
+        _global_failures.append(time.monotonic())
+        raise HTTPException(status_code=401, detail="PIN incorrecto")
+    _failures.pop(key, None)
+    _blocked_until.pop(key, None)
+    return {"access_token": _make_token(), "token_type": "bearer", "expires_in": JWT_EXPIRE_DAYS * 86400}
+
+
+class RegistrationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    phone: str = Field(min_length=6, max_length=30)
+    email: EmailStr
+    health_notes: str = Field(default="", max_length=1000)
+
+
+class Registration(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    name: str
+    phone: str
+    email: str
+    health_notes: str = ""
+    status: Literal["pending", "approved", "rejected"] = "pending"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+@public_router.post("/registrations", status_code=201)
+async def create_registration(body: RegistrationCreate, request: Request):
+    _check_registration_limit(_client_key(request))
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="El nombre no puede estar vacío")
+    reg = Registration(
+        name=name,
+        phone=body.phone.strip(),
+        email=str(body.email).lower(),
+        health_notes=body.health_notes.strip(),
+    )
+    await db.registrations.insert_one(reg.model_dump())
+    # Solo devolvemos confirmación; los datos quedan visibles únicamente para el monitor.
+    return {"ok": True, "name": reg.name}
 
 
 # ============ MODELS ============
@@ -73,6 +230,9 @@ class Student(BaseModel):
     bono_type: BonoType  # 5 clases (10€) o 10 clases (20€)
     classes_remaining: int
     money_remaining: float  # en euros que el alumno aún tiene disponible (2€ por clase)
+    phone: str = ""
+    email: str = ""
+    health_notes: str = ""
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -115,7 +275,7 @@ class MonthlySummary(BaseModel):
 
 # ============ ROUTES ============
 
-@api_router.get("/")
+@public_router.get("/")
 async def root():
     return {"message": "Control de Asistencia API"}
 
@@ -175,6 +335,55 @@ async def renew_bono(student_id: str, payload: RenewBonoPayload):
     )
     doc = await db.students.find_one({"id": student_id}, {"_id": 0})
     return Student(**doc)
+
+
+# -------- REGISTRATIONS (admin) --------
+
+@api_router.get("/registrations", response_model=List[Registration])
+async def list_registrations():
+    docs = await db.registrations.find({"status": "pending"}, {"_id": 0}).sort("created_at", -1).to_list(500)
+    return [Registration(**d) for d in docs]
+
+
+class ApprovePayload(BaseModel):
+    bono_type: BonoType
+
+
+@api_router.post("/registrations/{reg_id}/approve", response_model=Student)
+async def approve_registration(reg_id: str, payload: ApprovePayload):
+    reg = await db.registrations.find_one({"id": reg_id, "status": "pending"}, {"_id": 0})
+    if not reg:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada o ya gestionada")
+    student = Student(
+        name=reg["name"],
+        bono_type=payload.bono_type,
+        classes_remaining=payload.bono_type,
+        money_remaining=payload.bono_type * COST_PER_CLASS_STUDENT,
+        phone=reg.get("phone", ""),
+        email=reg.get("email", ""),
+        health_notes=reg.get("health_notes", ""),
+    )
+    await db.students.insert_one(student.model_dump())
+    # Marcar aprobada solo si sigue pendiente (evita dobles aprobaciones simultáneas)
+    upd = await db.registrations.update_one(
+        {"id": reg_id, "status": "pending"},
+        {"$set": {"status": "approved", "resolved_at": datetime.now(timezone.utc), "student_id": student.id}},
+    )
+    if upd.modified_count == 0:
+        await db.students.delete_one({"id": student.id})  # deshacer el alta que acabamos de crear
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada o ya gestionada")
+    return student
+
+
+@api_router.post("/registrations/{reg_id}/reject")
+async def reject_registration(reg_id: str):
+    res = await db.registrations.update_one(
+        {"id": reg_id, "status": "pending"},
+        {"$set": {"status": "rejected", "resolved_at": datetime.now(timezone.utc)}},
+    )
+    if res.matched_count == 0:
+        raise HTTPException(status_code=404, detail="Solicitud no encontrada o ya gestionada")
+    return {"ok": True}
 
 
 # -------- ATTENDANCE --------
@@ -331,6 +540,7 @@ async def class_days():
     return {"days": days, "count": len(days)}
 
 
+app.include_router(public_router)
 app.include_router(api_router)
 
 app.add_middleware(

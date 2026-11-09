@@ -1,0 +1,39 @@
+{
+  "summary": "Iteration 3 retest via the public URL. Backend: 6/6 new pytest tests pass (test_iter3_limits_approve.py). (1) Login lockout: 5 wrong PINs from one IP are rejected and the 6th returns 429 with Retry-After. This works with a spoofed XFF and with no header, and another IP can still log in. (2) The registration limit returns 429 on the 11th request in an hour per IP, and a different IP still gets 201. (3) Approve creates the student with the right bono, money, phone and health data. A second approve returns 404 with no duplicate. Five concurrent approves give exactly one 200 and one student. (4) Attendance regression works (counter decrements, duplicate returns 409). NEW SECURITY ISSUE: _client_key trusts the first X-Forwarded-For entry, and the client controls it. Seven wrong PINs, each with a different XFF, all returned 401 and none was ever locked. A real IP that was already locked got 200 by adding 'X-Forwarded-For: 8.8.8.8'. Both the brute-force lockout and the registration spam limit can therefore be bypassed with one header. Frontend (375x667): the flow from registration form to success works. Wrong PIN shows an error, and the correct PIN opens Alumnos. Pending banner leads to /solicitudes. Approve/reject buttons measure 151x44 and 311x44. A stale approve shows 'Solicitud no encontrada o ya gestionada' and the card disappears after refresh. A mocked GET 500 shows requests-load-error with requests-retry-btn (44px high), and retry brings the list back. Approve 10 removes the card. Attendance shows a toast on #1A642B with white text (readable), and the button changes to 'Asistió'. The register button now has maxWidth 150. NEW UI BUG: opening /solicitudes directly (reload or deep link) and tapping requests-back-btn shows the dev error \"The action 'GO_BACK' was not handled\" and the user stays stuck on the screen. No deprecated Expo packages or SafeAreaView issues detected.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/auth/login, POST /api/registrations", "issue": "Spoofable client IP. _client_key (server.py:86-91) uses X-Forwarded-For.split(',')[0], and the client supplies that value. The ingress appends to the header instead of overwriting it. Reproduction: 7 wrong PINs with XFF 10.9.N.1 all returned 401 and none locked. A locked real IP plus 'X-Forwarded-For: 8.8.8.8' and the correct PIN returned 200. An attacker can brute-force the 6-digit PIN without limit and spam registrations. Fix: use the right-most XFF entry that was not added by our own proxies (the entry the ingress appended, e.g. split(',')[-1], after checking how many hops the ingress adds), and/or add a global failure counter (e.g. 20 failures per 15 min across all IPs) as a backstop.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "rate limiters", "issue": "They are in-memory, so they reset on restart and are not shared between workers. Acceptable for one worker."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Solicitudes back button", "issue": "router.back() with no history (page reloaded or /solicitudes opened directly) throws \"The action 'GO_BACK' was not handled\" and nothing happens. Reference: /app/frontend/app/solicitudes.tsx:55. Fix: router.canGoBack() ? router.back() : router.replace('/'). Check acceso.tsx and inscripcion.tsx back buttons for the same problem.", "testID": "requests-back-btn", "priority": "MEDIUM"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Alumnos", "issues": ["Long names are still truncated: the name column is about 137px while the register button takes 150px (e.g. 'TEST_UI Fernández Ló…'). Consider a smaller/icon-only register button or letting the name wrap to 2 lines.", "renew-bono / delete-student icon buttons measure 30x32 on web (below 44). hitSlop does not apply on web. Use padding 10 or minWidth/minHeight 44."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter3_limits_approve.py", "/app/test_reports/pytest/pytest_results_iter3.xml"],
+  "action_items": [
+    "HIGH: Stop trusting the client-controlled first X-Forwarded-For entry in _client_key. Use the proxy-appended (right-most trusted) entry and add a global login failure cap.",
+    "MEDIUM: solicitudes.tsx back button should fall back to router.replace('/') when !router.canGoBack(). Apply the same to the other back buttons.",
+    "LOW: Make the renew/delete icon buttons at least 44x44. Consider giving long student names more room."
+  ],
+  "critical_code_review_comments": [
+    "server.py:86-91 _client_key: XFF spoofing bypasses both limiters (verified).",
+    "The approve flow is now correct: it checks for pending, inserts the student, then updates only if still pending, and deletes its own student if it lost a race. Verified with 5 concurrent requests.",
+    "The toast now uses brandSecondary #1A642B with white text, which is readable."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter3_limits_approve.py"],
+  "success_rate": {"backend": "83% (6/6 tests pass, but the IP spoofing bypass was found)", "frontend": "90% (all requested flows pass; deep-link back button bug)"},
+  "seed_data_creation": "None. All TEST_It3_ and TEST_UI registrations and students were deleted by id. A pre-existing pending registration 'Lucía Ruiz' was left untouched. The students collection held no non-test students before or after.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run test_iter3_limits_approve.py with EXPO_PUBLIC_BACKEND_URL exported. The lockout tests lock the runner's real IP, so restart the backend afterwards (done this time). Spoofed XFF currently works as a bypass. Once fixed, tests that rely on custom XFF IPs (test_registration_rate_limit, test_zz_lockout_429) will need adjusting.",
+  "rca_of_issue": "XFF: the client's own header value is kept as the first entry and the ingress appends the real IP, so split(',')[0] is attacker-controlled. GO_BACK: Expo Router has no back stack on a cold load of /solicitudes."
+}

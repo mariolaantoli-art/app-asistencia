@@ -1,0 +1,48 @@
+{
+  "summary": "Iteration 2: PIN auth, route protection and student self-registration (pending -> approve/reject) tested end-to-end via public URL. Backend 48/49 pytest pass (regression suite updated to log in first). The only failure: the brute-force limiter does NOT reliably return 429 after 5 wrong PINs because it keys on request.client.host, which is the k8s ingress proxy IP (10.11.1.72 / 10.11.1.73 alternate) instead of the real client. Frontend: all requested flows pass on a 375x667 mobile viewport (bienvenida -> inscripcion with validation/disabled submit -> success; acceso wrong PIN error -> tabs; pending banner -> solicitudes; approve 10 / two-tap reject; approved student with medkit icon + info modal showing phone/email/health notes; attendance regression; logout -> bienvenida; reload/deep links without token -> bienvenida). No deprecated Expo packages or SafeAreaView issues detected. NOTE: the seed students María García and Juan Pérez were NOT in the DB when I checked (students collection was empty apart from my TEST_ data). My tests only delete the ids they create. The backend log shows the seed POSTs (127.0.0.1, lines 13-14) and iteration-1 DELETEs before this iteration started.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "POST /api/auth/login", "issue": "The rate limiter keys on request.client.host (server.py:86-87), which is the ingress proxy IP, not the user. (a) Six wrong PINs in a row all returned 401 because the requests alternated between proxies 10.11.1.72 and .73, so each proxy has its own counter and the limit is about 5 x number of proxies. (b) Worse: one person's failed attempts lock out EVERYONE behind that proxy, including the monitor (we saw this: after the lockout, a correct PIN got 429). Fix: take the client IP from the first X-Forwarded-For entry, falling back to client.host, or add a global failure counter. The counter is also in-memory, so it resets on restart and is not shared across workers.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "POST /api/registrations", "issue": "Public endpoint with no rate limit or captcha, so anyone can spam pending registrations."},
+      {"endpoint": "POST /api/registrations/{id}/approve", "issue": "Not atomic: the registration is marked approved before the student is inserted. If insert_one fails, the registration is lost (no rollback)."},
+      {"endpoint": "Seed data", "issue": "The seed students María García and Juan Pérez are missing from test_database.students. The main agent should re-seed them if they are expected."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {"component": "Solicitudes list", "issue": "q.isError is not handled. If GET /registrations fails (e.g. a non-401 error), the screen shows 'No hay inscripciones pendientes' instead of an error. On an approve/reject error (e.g. 404, already handled on another device) the list is not refreshed, so the stale card stays.", "testID": "requests-empty", "priority": "low"}
+    ],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Alumnos (tabs/index)", "issues": [
+        "The student name is truncated heavily ('TEST_UI …') at 375px because the 'Registrar Asistencia' button takes about half the row width. Longer Spanish names will be cut. Consider stacking the button under the name or using a shorter label.",
+        "The toast uses white text on success #34C759, about 2.2:1 contrast, below WCAG AA. Use brandPrimary #248A3D or dark text."
+      ]},
+      {"screen": "Solicitudes", "issues": ["The approve-5/approve-10 buttons are 40px tall, below the 44px minimum touch target."]}
+    ],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_auth_registrations.py", "/app/backend/tests/test_asistencia_api.py", "/app/test_reports/pytest/pytest_results_iter2.xml"],
+  "action_items": [
+    "Fix the login rate limiter key: use the first IP in X-Forwarded-For (fallback request.client.host) so the lockout is per real client and does not lock out the monitor via the shared ingress IP.",
+    "Re-seed the María García and Juan Pérez students if they are expected (the DB currently has no students).",
+    "Handle the error state in solicitudes.tsx (q.isError) and refresh the list on approve/reject errors.",
+    "Improve the toast contrast and stop student names from truncating in the Alumnos row. Make the approve buttons at least 44px tall.",
+    "(tabs)/index.tsx is 727 lines (>700): split the modals (AddStudentModal, RenewBonoModal, info/delete modals) into separate components."
+  ],
+  "critical_code_review_comments": [
+    "server.py:86 _client_key uses the proxy IP, so brute-force protection is ineffective and enables a lockout DoS (see backend critical).",
+    "server.py:318-337 approve is not transactional.",
+    "The tabs screens have no auth guard. They rely on a 401 -> clearToken -> router.replace('/bienvenida') in api.ts. It works (verified deep links to /solicitudes and /historial redirect), but the protected UI briefly mounts first.",
+    "The client email regex /\\S+@\\S+\\.\\S+/ is looser than Pydantic EmailStr. Edge cases get a generic 'Revisa los datos' 422 message (acceptable)."
+  ],
+  "updated_files": ["/app/backend/tests/test_asistencia_api.py (session fixture now logs in with the PIN)", "/app/backend/tests/test_auth_registrations.py (new)"],
+  "success_rate": {"backend": "98% (48/49)", "frontend": "100% of requested flows"},
+  "seed_data_creation": "Created the TEST_Reg_* registrations/students (pytest) and TEST_UI Alumna / TEST_UI Rechazo (UI). All deleted by their ids afterwards. Lucía Ruiz (pending) was left untouched. The backend was restarted to clear the in-memory login limiter.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Run pytest with -n 0 (xdist is enabled in pytest.ini, and parallel runs collide with the lockout test). test_zz_lockout_429 must run last, and you must run 'sudo supervisorctl restart backend' afterwards. The ingress uses two proxy IPs (10.11.1.72/.73), so per-IP lockout is split across them. The registrations POST returns only {ok,name}, so look up the id via GET /registrations by unique name. The rejected/approved registrations can only be cleaned up via Mongo (there is no delete API).",
+  "rca_of_issue": "Lockout: uvicorn runs behind the k8s ingress, so request.client.host = the ingress pod IP. The backend log shows the login requests alternating between 10.11.1.72 and 10.11.1.73. Reproduce: send 6 sequential wrong PINs through the public URL and you get [401 x6]. With parallel traffic, one proxy reaches 5 failures and then blocks every user (including a correct PIN) for 15 minutes."
+}

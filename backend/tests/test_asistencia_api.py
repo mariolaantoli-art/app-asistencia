@@ -11,6 +11,9 @@ API = f"{BASE_URL}/api"
 def s():
     sess = requests.Session()
     sess.headers.update({"Content-Type": "application/json"})
+    r = requests.post(f"{API}/auth/login", json={"pin": os.environ.get("ADMIN_PIN", "688202")})
+    assert r.status_code == 200, r.text
+    sess.headers.update({"Authorization": f"Bearer {r.json()['access_token']}"})
     return sess
 
 

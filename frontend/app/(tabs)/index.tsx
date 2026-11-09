@@ -16,8 +16,9 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import * as Haptics from "expo-haptics";
 import Ionicons from "@react-native-vector-icons/ionicons";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRouter } from "expo-router";
 
-import { api, Student } from "@/src/api";
+import { api, logout, Student } from "@/src/api";
 import { makeStyles, useTheme, spacing, radius } from "@/src/theme";
 import { defaultClassDay, formatLongDate, formatShortDate, todayYMD } from "@/src/utils/dates";
 
@@ -40,6 +41,10 @@ export default function AlumnosScreen() {
     queryFn: api.listStudents,
   });
   const daysQuery = useQuery({ queryKey: ["class-days"], queryFn: api.classDays });
+  const regsQuery = useQuery({ queryKey: ["registrations"], queryFn: api.listRegistrations });
+  const pendingCount = regsQuery.data?.length ?? 0;
+  const [infoStudent, setInfoStudent] = useState<Student | null>(null);
+  const router = useRouter();
   const attendanceQuery = useQuery({ queryKey: ["attendance"], queryFn: api.listAttendance });
   const days = useMemo(() => daysQuery.data?.days ?? [], [daysQuery.data]);
   const [pickedDay, setPickedDay] = useState<string | undefined>();
@@ -89,10 +94,32 @@ export default function AlumnosScreen() {
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header} testID="alumnos-header">
-        <Text style={styles.headerTitle}>Alumnos</Text>
+        <View style={styles.headerTop}>
+          <Text style={styles.headerTitle}>Alumnos</Text>
+          <Pressable
+            onPress={async () => {
+              await logout();
+              router.replace("/bienvenida");
+            }}
+            style={styles.logoutBtn}
+            hitSlop={8}
+            testID="logout-btn"
+          >
+            <Ionicons name="log-out-outline" size={22} color={colors.muted} />
+          </Pressable>
+        </View>
         <Text style={styles.headerSubtitle} testID="selected-class-day">
           {selectedDay ? `Clase: ${formatLongDate(selectedDay)}${selectedDay === today ? " (hoy)" : ""}` : "Cargando días de clase…"}
         </Text>
+        {pendingCount > 0 && (
+          <Pressable style={styles.pendingBanner} onPress={() => router.push("/solicitudes")} testID="pending-requests-banner">
+            <Ionicons name="mail-unread" size={18} color={colors.onWarning} />
+            <Text style={styles.pendingText}>
+              {pendingCount} {pendingCount === 1 ? "inscripción pendiente" : "inscripciones pendientes"}
+            </Text>
+            <Ionicons name="chevron-forward" size={18} color={colors.onWarning} />
+          </Pressable>
+        )}
       </View>
 
       <View style={styles.daysRow}>
@@ -155,6 +182,7 @@ export default function AlumnosScreen() {
               busy={registerMut.isPending && registerMut.variables === item.id}
               onDelete={() => setConfirmDelete(item)}
               onRenew={() => setShowRenew(item)}
+              onInfo={() => setInfoStudent(item)}
             />
           )}
         />
@@ -170,6 +198,22 @@ export default function AlumnosScreen() {
 
       <AddStudentModal visible={showAdd} onClose={() => setShowAdd(false)} onDone={() => showToast("Alumno añadido", "ok")} />
       <RenewBonoModal student={showRenew} onClose={() => setShowRenew(null)} onDone={() => showToast("Bono renovado", "ok")} />
+
+      <Modal visible={!!infoStudent} transparent animationType="slide" onRequestClose={() => setInfoStudent(null)}>
+        <View style={styles.modalWrap}>
+          <Pressable style={styles.modalBackdrop} onPress={() => setInfoStudent(null)} />
+          <View style={[styles.modalSheet, { paddingBottom: sheetInsets.bottom + spacing.xl }]} testID="student-info-modal">
+            <View style={styles.sheetHandle} />
+            <Text style={styles.sheetTitle}>{infoStudent?.name}</Text>
+            <InfoLine icon="call-outline" label="Teléfono" value={infoStudent?.phone} />
+            <InfoLine icon="mail-outline" label="Email" value={infoStudent?.email} />
+            <InfoLine icon="medkit-outline" label="Salud / lesiones" value={infoStudent?.health_notes} />
+            <Pressable style={[styles.secondaryBtn, { marginTop: spacing.lg }]} onPress={() => setInfoStudent(null)} testID="close-student-info">
+              <Text style={styles.secondaryBtnText}>Cerrar</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
 
       <Modal visible={!!confirmDelete} transparent animationType="fade" onRequestClose={() => setConfirmDelete(null)}>
         <View style={styles.modalWrap}>
@@ -200,7 +244,7 @@ export default function AlumnosScreen() {
         <View
           style={[
             styles.toast,
-            { bottom: insets.bottom + 90, backgroundColor: toast.type === "ok" ? colors.success : colors.error },
+            { bottom: insets.bottom + 90, backgroundColor: toast.type === "ok" ? colors.brandSecondary : colors.error },
           ]}
           pointerEvents="none"
           testID="toast"
@@ -212,6 +256,20 @@ export default function AlumnosScreen() {
   );
 }
 
+function InfoLine({ icon, label, value }: { icon: string; label: string; value?: string }) {
+  const { colors } = useTheme();
+  const styles = useStyles();
+  return (
+    <View style={styles.infoLine}>
+      <Ionicons name={icon as any} size={18} color={colors.brandSecondary} />
+      <View style={{ flex: 1 }}>
+        <Text style={styles.infoLabel}>{label}</Text>
+        <Text style={styles.infoValue}>{value || "—"}</Text>
+      </View>
+    </View>
+  );
+}
+
 function StudentRow({
   student,
   onRegister,
@@ -219,6 +277,7 @@ function StudentRow({
   busy,
   onDelete,
   onRenew,
+  onInfo,
 }: {
   student: Student;
   onRegister: () => void;
@@ -226,6 +285,7 @@ function StudentRow({
   busy: boolean;
   onDelete: () => void;
   onRenew: () => void;
+  onInfo: () => void;
 }) {
   const { colors } = useTheme();
   const styles = useStyles();
@@ -233,10 +293,13 @@ function StudentRow({
 
   return (
     <View style={styles.card} testID={`student-row-${student.id}`}>
-      <View style={styles.cardLeft}>
-        <Text style={styles.studentName} numberOfLines={1}>
-          {student.name}
-        </Text>
+      <Pressable style={styles.cardLeft} onPress={onInfo} testID={`student-info-${student.id}`}>
+        <View style={styles.nameRow}>
+          <Text style={styles.studentName} numberOfLines={1}>
+            {student.name}
+          </Text>
+          {!!student.health_notes && <Ionicons name="medkit" size={14} color={colors.warning} />}
+        </View>
         <View style={styles.badgesRow}>
           <View style={[styles.badge, low ? styles.badgeDanger : styles.badgeInfo]}>
             <Ionicons name="ticket-outline" size={13} color={low ? colors.error : colors.brandSecondary} />
@@ -248,7 +311,7 @@ function StudentRow({
             <Text style={[styles.badgeText, { color: colors.onSurfaceTertiary }]}>{student.money_remaining.toFixed(0)} €</Text>
           </View>
         </View>
-      </View>
+      </Pressable>
 
       <View style={styles.cardActions}>
         <Pressable
@@ -476,6 +539,23 @@ const useStyles = makeStyles((colors) => ({
     paddingBottom: spacing.md,
   },
   headerTitle: { fontSize: 32, fontWeight: "800", color: colors.onSurface, letterSpacing: -0.5 },
+  headerTop: { flexDirection: "row", alignItems: "center", justifyContent: "space-between" },
+  logoutBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
+  pendingBanner: {
+    marginTop: spacing.md,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    backgroundColor: colors.warning,
+    borderRadius: radius.md,
+    paddingHorizontal: spacing.md,
+    minHeight: 44,
+  },
+  pendingText: { flex: 1, color: colors.onWarning, fontWeight: "700", fontSize: 14 },
+  nameRow: { flexDirection: "row", alignItems: "center", gap: 6 },
+  infoLine: { flexDirection: "row", gap: spacing.md, paddingVertical: spacing.sm, alignItems: "flex-start" },
+  infoLabel: { fontSize: 12, color: colors.muted, fontWeight: "600" },
+  infoValue: { fontSize: 15, color: colors.onSurface, marginTop: 2 },
   headerSubtitle: { marginTop: 4, fontSize: 14, color: colors.muted, fontWeight: "500" },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   daysRow: { height: 56, justifyContent: "center" },
@@ -539,19 +619,20 @@ const useStyles = makeStyles((colors) => ({
   registerBtn: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
+    gap: 4,
     backgroundColor: colors.brandPrimary,
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingVertical: 10,
     borderRadius: radius.md,
-    minWidth: 120,
+    minHeight: 44,
+    maxWidth: 150,
     justifyContent: "center",
   },
   registerBtnPressed: { backgroundColor: colors.brandSecondary },
   registerBtnDisabled: { backgroundColor: colors.borderStrong },
-  registerBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 14 },
+  registerBtnText: { color: colors.onBrandPrimary, fontWeight: "700", fontSize: 13, flexShrink: 1, textAlign: "center" },
   smallActionsRow: { flexDirection: "row", gap: 2 },
-  iconBtn: { padding: 6 },
+  iconBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
 
   fab: {
     position: "absolute",

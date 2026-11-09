@@ -21,6 +21,13 @@ App móvil para controlar asistencia de clases funcionales (martes y jueves, oct
 - Resumen mensual: total, parte alumnos, parte ayuntamiento, desglose por alumno
 - Probado: backend 25/25, flujos frontend OK; bugs del informe corregidos
 
+## Implementado (2026-11-09, iteración 2)
+- Pantalla de bienvenida: "Soy alumno" (inscripción pública) / "Soy el monitor" (PIN)
+- Inscripción pública: nombre, teléfono, email, observaciones de salud → queda pendiente
+- Gestión protegida con PIN (ADMIN_PIN en backend/.env), token 30 días, bloqueo tras 5 fallos (por IP) y tope global de 30/15 min
+- Pantalla Inscripciones: aprobar con bono 10€/20€ o rechazar (rechazo no borra)
+- Ficha del alumno con teléfono, email y salud (icono si tiene observaciones)
+
 ## Backlog
 - P1: Exportar resumen mensual a PDF/Excel para el ayuntamiento
 - P1: Aviso de bono a punto de agotarse
