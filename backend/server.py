@@ -227,7 +227,7 @@ BonoType = Literal[5, 10]
 class Student(BaseModel):
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     name: str
-    bono_type: BonoType  # 5 clases (10€) o 10 clases (20€)
+    bono_type: Optional[BonoType] = None  # 5 clases (10€), 10 clases (20€) o None = sin bono
     classes_remaining: int
     money_remaining: float  # en euros que el alumno aún tiene disponible (2€ por clase)
     phone: str = ""

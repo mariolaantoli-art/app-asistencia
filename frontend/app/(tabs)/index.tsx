@@ -295,7 +295,7 @@ function StudentRow({
     <View style={styles.card} testID={`student-row-${student.id}`}>
       <Pressable style={styles.cardLeft} onPress={onInfo} testID={`student-info-${student.id}`}>
         <View style={styles.nameRow}>
-          <Text style={styles.studentName} numberOfLines={1}>
+          <Text style={styles.studentName} numberOfLines={2}>
             {student.name}
           </Text>
           {!!student.health_notes && <Ionicons name="medkit" size={14} color={colors.warning} />}
@@ -600,7 +600,7 @@ const useStyles = makeStyles((colors) => ({
     elevation: 1,
   },
   cardLeft: { flex: 1, marginRight: spacing.md },
-  studentName: { fontSize: 17, fontWeight: "700", color: colors.onSurfaceSecondary },
+  studentName: { fontSize: 16, fontWeight: "700", color: colors.onSurfaceSecondary, flexShrink: 1 },
   badgesRow: { flexDirection: "row", marginTop: 6, gap: 6, flexWrap: "wrap" },
   badge: {
     flexDirection: "row",

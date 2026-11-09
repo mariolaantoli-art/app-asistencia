@@ -61,7 +61,7 @@ export async function logout(): Promise<void> {
 export type Student = {
   id: string;
   name: string;
-  bono_type: 5 | 10;
+  bono_type: 5 | 10 | null;
   classes_remaining: number;
   money_remaining: number;
   phone?: string;

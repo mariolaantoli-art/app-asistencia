@@ -29,6 +29,7 @@ App móvil para controlar asistencia de clases funcionales (martes y jueves, oct
 - Ficha del alumno con teléfono, email y salud (icono si tiene observaciones)
 
 ## Backlog
+- Datos: 57 alumnos ya inscritos cargados sin bono (seed_alumnos.py, idempotente) – 2026-11-09
 - P1: Exportar resumen mensual a PDF/Excel para el ayuntamiento
 - P1: Aviso de bono a punto de agotarse
 - P2: Búsqueda de alumnos, días festivos sin clase, acceso con contraseña
