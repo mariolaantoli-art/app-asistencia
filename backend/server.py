@@ -8,6 +8,7 @@ from contextlib import suppress
 import jwt
 from fastapi import FastAPI, APIRouter, HTTPException, Query, Depends, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.responses import FileResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -61,6 +62,15 @@ INDEXES: dict[str, list[IndexModel]] = {
 
 
 async def backfill_student_codes() -> None:
+    # Si la base de datos está vacía (p. ej. recién publicada), cargar los alumnos ya inscritos, sin bono.
+    if await db.students.count_documents({}) == 0:
+        from seed_names import NAMES
+        base = datetime.now(timezone.utc)
+        for i, name in enumerate(NAMES):
+            s = Student(name=name, bono_type=None, classes_remaining=0, money_remaining=0.0,
+                        created_at=base + timedelta(milliseconds=i))
+            await db.students.insert_one(s.model_dump())
+        logging.getLogger(__name__).info("Cargados %d alumnos iniciales", len(NAMES))
     # Alumnos antiguos sin código personal: se les asigna uno.
     async for s in db.students.find({"code": {"$exists": False}}, {"_id": 0, "id": 1}):
         await db.students.update_one({"id": s["id"], "code": {"$exists": False}}, {"$set": {"code": _new_code()}})
@@ -819,6 +829,22 @@ async def class_days():
 
 app.include_router(public_router)
 app.include_router(api_router)
+
+# -------- VERSIÓN WEB (abrir la app desde el navegador) --------
+WEB_DIR = (ROOT_DIR / "web_app").resolve()
+
+
+@app.get("/api/app", include_in_schema=False)
+@app.get("/api/app/{path:path}", include_in_schema=False)
+async def web_app(path: str = ""):
+    if not (WEB_DIR / "index.html").exists():
+        raise HTTPException(status_code=404, detail="Versión web no disponible")
+    if path:
+        candidate = (WEB_DIR / path).resolve()
+        if candidate.is_relative_to(WEB_DIR) and candidate.is_file():
+            return FileResponse(candidate)
+    # Rutas de la app (p. ej. /api/app/acceso): se sirve index.html
+    return FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 app.add_middleware(
     CORSMiddleware,

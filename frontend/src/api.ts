@@ -4,7 +4,11 @@ import { router } from "expo-router";
 import { clearToken, getToken, setToken } from "@/src/auth";
 import { queryClient } from "@/src/query-client";
 
-const BASE = process.env.EXPO_PUBLIC_BACKEND_URL;
+// En la versión web servida por el propio backend (/api/app) usamos el mismo dominio,
+// así funciona igual en pruebas y en producción.
+const servedFromBackend =
+  Platform.OS === "web" && typeof window !== "undefined" && window.location.pathname.startsWith("/api/app");
+const BASE = servedFromBackend ? window.location.origin : process.env.EXPO_PUBLIC_BACKEND_URL;
 
 export const API_BASE = `${BASE}/api`;
 
