@@ -29,7 +29,7 @@ App móvil para controlar asistencia de clases funcionales (martes y jueves, oct
 - Ficha del alumno con teléfono, email y salud (icono si tiene observaciones)
 
 ## Backlog
-- 2026-11-09 iteración 5: VERSIÓN WEB sin instalar nada: el backend sirve la app exportada en /api/app/ (producción: https://asistencia-funcional.emergent.host/api/app/). IMPORTANTE: tras cualquier cambio del frontend ejecutar `bash /app/frontend/scripts/build-web.sh` antes de publicar. Al arrancar con BD vacía se cargan los 57 alumnos (seed_names.py)
+- 2026-11-09 iteración 5: VERSIÓN WEB sin instalar nada: el backend sirve la app exportada en /api/app/ (producción: https://asistencia-funcional.emergent.host/api/app/). IMPORTANTE: tras cualquier cambio del frontend ejecutar `bash /app/frontend/scripts/build-web.sh` antes de publicar. Al arrancar con BD vacía se cargan los 57 alumnos (seed_names.py). El script renombra assets/node_modules → assets/vendor porque node_modules está en .gitignore y no se publica (iconos)
 - 2026-11-09 iteración 4: "Bonos pagados" (icono cartera): historial de cada bono pagado; corregir importe, cambiar de persona o anular (no deja si ya se han gastado esas clases); protegido contra doble toque. Restaurada LUNA SOFIA CAAMAÑO GARCIA (57 alumnos)
 - 2026-11-09 iteración 3: marcar días como Festivo/Suspendida (bloquea asistencias); zona alumno "Registrar mi clase" con nombre + código personal de 4 cifras (visible en ficha), hoy o días anteriores, muestra saldo; historial indica "registrado por el alumno"
 - Datos: 57 alumnos ya inscritos cargados sin bono (seed_alumnos.py, idempotente) – 2026-11-09

@@ -16,4 +16,10 @@ npx expo export --platform web --output-dir /tmp/web_export --clear
 mkdir -p /app/backend/web_app
 find /app/backend/web_app -mindepth 1 -delete
 cp -r /tmp/web_export/. /app/backend/web_app/
+# Las carpetas "node_modules" no se publican (están en .gitignore): renombrar y corregir rutas
+if [ -d /app/backend/web_app/assets/node_modules ]; then
+  mv /app/backend/web_app/assets/node_modules /app/backend/web_app/assets/vendor
+  grep -rl "assets/node_modules/" /app/backend/web_app --include=*.js --include=*.html --include=*.json \
+    | xargs -r sed -i 's#assets/node_modules/#assets/vendor/#g'
+fi
 echo "Web export listo en /app/backend/web_app"
