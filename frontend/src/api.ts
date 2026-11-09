@@ -60,6 +60,16 @@ export async function logout(): Promise<void> {
 
 export type DayStatus = "festivo" | "suspendida";
 
+export type BonoPurchase = {
+  id: string;
+  student_id: string;
+  student_name: string;
+  bono_type: 5 | 10;
+  amount: number;
+  status: "active" | "cancelled";
+  created_at: string;
+};
+
 // ---- Zona alumno (pública, con código personal) ----
 export type StudentMe = {
   id: string;
@@ -178,6 +188,10 @@ export const api = {
     request<{ date: string; status: string }>(`/class-days/${day}`, { method: "PUT", body: JSON.stringify({ status }) }),
 
   listRegistrations: () => request<Registration[]>("/registrations"),
+  listBonos: () => request<BonoPurchase[]>("/bonos"),
+  updateBono: (id: string, student_id: string, bono_type: 5 | 10) =>
+    request<BonoPurchase>(`/bonos/${id}`, { method: "PUT", body: JSON.stringify({ student_id, bono_type }) }),
+  cancelBono: (id: string) => request<{ ok: boolean }>(`/bonos/${id}/cancel`, { method: "POST" }),
   approveRegistration: (id: string, bono_type: 5 | 10) =>
     request<Student>(`/registrations/${id}/approve`, { method: "POST", body: JSON.stringify({ bono_type }) }),
   rejectRegistration: (id: string) => request<{ ok: boolean }>(`/registrations/${id}/reject`, { method: "POST" }),

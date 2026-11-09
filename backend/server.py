@@ -52,6 +52,11 @@ INDEXES: dict[str, list[IndexModel]] = {
     "class_day_status": [
         IndexModel([("date", ASCENDING)], name="date", unique=True),
     ],
+    "bono_purchases": [
+        IndexModel([("id", ASCENDING)], name="id", unique=True),
+        IndexModel([("status", ASCENDING), ("created_at", DESCENDING)], name="status_created"),
+        IndexModel([("student_id", ASCENDING)], name="student_id"),
+    ],
 }
 
 
@@ -318,12 +323,14 @@ async def create_student(payload: StudentCreate):
         raise HTTPException(status_code=400, detail="El nombre no puede estar vacío")
     student = Student(
         name=name,
-        bono_type=payload.bono_type,
-        classes_remaining=payload.bono_type,
-        money_remaining=payload.bono_type * COST_PER_CLASS_STUDENT,
+        bono_type=None,
+        classes_remaining=0,
+        money_remaining=0.0,
     )
     await db.students.insert_one(student.model_dump())
-    return student
+    await _add_bono(student.id, student.name, payload.bono_type)
+    doc = await db.students.find_one({"id": student.id}, {"_id": 0})
+    return Student(**doc)
 
 
 @api_router.delete("/students/{student_id}")
@@ -332,6 +339,10 @@ async def delete_student(student_id: str):
     if res.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
     await db.attendance.delete_many({"student_id": student_id})
+    await db.bono_purchases.update_many(
+        {"student_id": student_id, "status": "active"},
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc), "reason": "alumno eliminado"}},
+    )
     return {"ok": True}
 
 
@@ -339,23 +350,143 @@ class RenewBonoPayload(BaseModel):
     bono_type: BonoType
 
 
+class BonoPurchase(BaseModel):
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    student_id: str
+    student_name: str
+    bono_type: BonoType  # 5 o 10 clases
+    amount: float  # 10€ o 20€
+    status: Literal["active", "cancelled"] = "active"
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+async def _add_bono(student_id: str, student_name: str, bono_type: int) -> BonoPurchase:
+    purchase = BonoPurchase(
+        student_id=student_id,
+        student_name=student_name,
+        bono_type=bono_type,
+        amount=bono_type * COST_PER_CLASS_STUDENT,
+    )
+    await db.students.update_one(
+        {"id": student_id},
+        {
+            "$inc": {"classes_remaining": bono_type, "money_remaining": bono_type * COST_PER_CLASS_STUDENT},
+            "$set": {"bono_type": bono_type},
+        },
+    )
+    await db.bono_purchases.insert_one(purchase.model_dump())
+    return purchase
+
+
+async def _remove_bono_classes(student_id: str, classes: int) -> None:
+    """Quita las clases de un bono solo si el alumno aún las tiene sin gastar (atómico)."""
+    res = await db.students.update_one(
+        {"id": student_id, "classes_remaining": {"$gte": classes}},
+        {"$inc": {"classes_remaining": -classes, "money_remaining": -classes * COST_PER_CLASS_STUDENT}},
+    )
+    if res.modified_count == 0:
+        raise HTTPException(
+            status_code=409,
+            detail="El alumno ya ha gastado clases de este bono. Deshaz primero esas asistencias en Historial",
+        )
+
+
 @api_router.post("/students/{student_id}/renew", response_model=Student)
 async def renew_bono(student_id: str, payload: RenewBonoPayload):
     student = await db.students.find_one({"id": student_id}, {"_id": 0})
     if not student:
         raise HTTPException(status_code=404, detail="Alumno no encontrado")
-    new_classes = student["classes_remaining"] + payload.bono_type
-    new_money = student["money_remaining"] + payload.bono_type * COST_PER_CLASS_STUDENT
-    await db.students.update_one(
-        {"id": student_id},
-        {"$set": {
-            "bono_type": payload.bono_type,
-            "classes_remaining": new_classes,
-            "money_remaining": new_money,
-        }},
-    )
+    await _add_bono(student_id, student["name"], payload.bono_type)
     doc = await db.students.find_one({"id": student_id}, {"_id": 0})
     return Student(**doc)
+
+
+# -------- BONOS PAGADOS (corregir errores) --------
+
+@api_router.get("/bonos", response_model=List[BonoPurchase])
+async def list_bonos(student_id: Optional[str] = None):
+    q: dict = {"status": "active"}
+    if student_id:
+        q["student_id"] = student_id
+    docs = await db.bono_purchases.find(q, {"_id": 0}).sort("created_at", -1).to_list(2000)
+    return [BonoPurchase(**d) for d in docs]
+
+
+class BonoUpdatePayload(BaseModel):
+    bono_type: BonoType
+    student_id: str
+
+
+@api_router.put("/bonos/{bono_id}", response_model=BonoPurchase)
+async def update_bono(bono_id: str, payload: BonoUpdatePayload):
+    bono = await db.bono_purchases.find_one({"id": bono_id, "status": "active"}, {"_id": 0})
+    if not bono:
+        raise HTTPException(status_code=404, detail="Bono no encontrado")
+    target = await db.students.find_one({"id": payload.student_id}, {"_id": 0})
+    if not target:
+        raise HTTPException(status_code=404, detail="Alumno no encontrado")
+    if bono["student_id"] == payload.student_id and bono["bono_type"] == payload.bono_type:
+        return BonoPurchase(**bono)
+
+    # 1) "Reservar" el cambio: solo una petición puede pasar del estado antiguo al nuevo
+    new_fields = {
+        "student_id": payload.student_id,
+        "student_name": target["name"],
+        "bono_type": payload.bono_type,
+        "amount": payload.bono_type * COST_PER_CLASS_STUDENT,
+        "updated_at": datetime.now(timezone.utc),
+    }
+    claimed = await db.bono_purchases.find_one_and_update(
+        {"id": bono_id, "status": "active", "student_id": bono["student_id"], "bono_type": bono["bono_type"]},
+        {"$set": new_fields},
+    )
+    if not claimed:
+        raise HTTPException(status_code=409, detail="Este bono se acaba de modificar. Vuelve a abrirlo")
+
+    # 2) Ajustar saldos; si falla, deshacer el cambio del bono
+    try:
+        if bono["student_id"] == payload.student_id:
+            diff = payload.bono_type - bono["bono_type"]
+            if diff < 0:
+                await _remove_bono_classes(payload.student_id, -diff)
+            else:
+                await db.students.update_one(
+                    {"id": payload.student_id},
+                    {"$inc": {"classes_remaining": diff, "money_remaining": diff * COST_PER_CLASS_STUDENT}},
+                )
+        else:
+            # Cambio de persona: se retira del alumno equivocado y se da al correcto
+            await _remove_bono_classes(bono["student_id"], bono["bono_type"])
+            await db.students.update_one(
+                {"id": payload.student_id},
+                {"$inc": {"classes_remaining": payload.bono_type, "money_remaining": payload.bono_type * COST_PER_CLASS_STUDENT}},
+            )
+    except HTTPException:
+        await db.bono_purchases.update_one(
+            {"id": bono_id},
+            {"$set": {k: bono[k] for k in ("student_id", "student_name", "bono_type", "amount")}},
+        )
+        raise
+    await db.students.update_one({"id": payload.student_id}, {"$set": {"bono_type": payload.bono_type}})
+    doc = await db.bono_purchases.find_one({"id": bono_id}, {"_id": 0})
+    return BonoPurchase(**doc)
+
+
+@api_router.post("/bonos/{bono_id}/cancel")
+async def cancel_bono(bono_id: str):
+    bono = await db.bono_purchases.find_one_and_update(
+        {"id": bono_id, "status": "active"},
+        {"$set": {"status": "cancelled", "cancelled_at": datetime.now(timezone.utc)}},
+        projection={"_id": 0},
+    )
+    if not bono:
+        raise HTTPException(status_code=404, detail="Bono no encontrado")
+    try:
+        await _remove_bono_classes(bono["student_id"], bono["bono_type"])
+    except HTTPException:
+        await db.bono_purchases.update_one({"id": bono_id}, {"$set": {"status": "active"}, "$unset": {"cancelled_at": ""}})
+        raise
+    return {"ok": True}
 
 
 # -------- REGISTRATIONS (admin) --------
@@ -377,9 +508,9 @@ async def approve_registration(reg_id: str, payload: ApprovePayload):
         raise HTTPException(status_code=404, detail="Solicitud no encontrada o ya gestionada")
     student = Student(
         name=reg["name"],
-        bono_type=payload.bono_type,
-        classes_remaining=payload.bono_type,
-        money_remaining=payload.bono_type * COST_PER_CLASS_STUDENT,
+        bono_type=None,
+        classes_remaining=0,
+        money_remaining=0.0,
         phone=reg.get("phone", ""),
         email=reg.get("email", ""),
         health_notes=reg.get("health_notes", ""),
@@ -393,7 +524,9 @@ async def approve_registration(reg_id: str, payload: ApprovePayload):
     if upd.modified_count == 0:
         await db.students.delete_one({"id": student.id})  # deshacer el alta que acabamos de crear
         raise HTTPException(status_code=404, detail="Solicitud no encontrada o ya gestionada")
-    return student
+    await _add_bono(student.id, student.name, payload.bono_type)
+    doc = await db.students.find_one({"id": student.id}, {"_id": 0})
+    return Student(**doc)
 
 
 @api_router.post("/registrations/{reg_id}/reject")

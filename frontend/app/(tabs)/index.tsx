@@ -115,6 +115,10 @@ export default function AlumnosScreen() {
       <View style={styles.header} testID="alumnos-header">
         <View style={styles.headerTop}>
           <Text style={styles.headerTitle}>Alumnos</Text>
+          <View style={{ flexDirection: "row" }}>
+            <Pressable onPress={() => router.push("/bonos")} style={styles.logoutBtn} hitSlop={8} testID="open-bonos-btn">
+              <Ionicons name="wallet-outline" size={22} color={colors.brandSecondary} />
+            </Pressable>
           <Pressable
             onPress={async () => {
               await logout();
@@ -126,6 +130,7 @@ export default function AlumnosScreen() {
           >
             <Ionicons name="log-out-outline" size={22} color={colors.muted} />
           </Pressable>
+          </View>
         </View>
         <View style={styles.subtitleRow}>
           <Text style={[styles.headerSubtitle, { flex: 1 }]} testID="selected-class-day">
@@ -542,6 +547,7 @@ function RenewBonoModal({
     mutationFn: () => api.renewBono(student!.id, bono),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["students"] });
+      qc.invalidateQueries({ queryKey: ["bonos"] });
       setErr(null);
       onDone();
       onClose();
@@ -557,7 +563,7 @@ function RenewBonoModal({
           <View style={styles.sheetHandle} />
           <Text style={styles.sheetTitle}>Renovar bono</Text>
           <Text style={[styles.label, { marginTop: 0 }]}>{student?.name}</Text>
-          <Text style={styles.helper}>Las clases se sumarán al saldo actual.</Text>
+          <Text style={styles.helper}>Las clases se sumarán al saldo actual. Si te equivocas, corrígelo en Bonos pagados (icono de cartera).</Text>
 
           <View style={styles.bonoRow}>
             <BonoOption value={5} selected={bono === 5} onPress={() => setBono(5)} testID="renew-bono-5" />

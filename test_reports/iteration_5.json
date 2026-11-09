@@ -1,0 +1,35 @@
+{
+  "summary": "Iteration 5: tested the 'Bonos pagados' correction feature. Backend: 12/13 pytest pass (test_iter5_bonos.py). Every add (create, renew, approve) creates a bono_purchases record. GET /api/bonos filters and sorts correctly. PUT 5<->10 and move-to-other-student adjust balances correctly. 409 is returned when the classes were already spent. Cancel is soft and the bono disappears from the list. Auth is enforced. The flaky race test failed in 3 of 8 reruns: concurrent PUT /api/bonos/{id} double-applies a move. Bonos of deleted students stay listed. Frontend (375x667, PIN 688202): all flows pass. Alumnos open-bonos-btn opens /bonos. Edit modal: 5->10 saved, row shows 20 €. Search + pick another student moves the bono. Cancel needs two taps. edit-bono-error shows the 409 message. Cancel removes the row. Alumnos balances update (Ana 0/Sin bono, Bea 10, Cris 4). Renew-from-Alumnos regression passes and the new bono appears at the top of /bonos. No deprecated Expo packages found in the new code. The 57 real students were verified untouched (57, all 0 classes / 0 €) and the real pending registration 'Lucía Ruiz' was untouched.",
+  "backend_issues": {
+    "critical": [
+      {"endpoint": "PUT /api/bonos/{id}", "issue": "Race condition: 5 concurrent identical PUTs that move a bono to another student apply the move more than once. In 3 of 8 runs the old student went to 0 classes instead of 5 and the new student was over-credited. Cause: the bono doc is read with find_one (status active) and the balances are changed before the bono doc is updated. Nothing atomically claims the bono. The UI's busy-disable reduces the risk but does not remove it (double tap, retries, two devices). Fix: atomically claim/transition the bono first, e.g. find_one_and_update({id, status:'active', student_id:old, bono_type:old}, {$set: new values}), then adjust balances, and roll back the bono doc if _remove_bono_classes raises 409. Apply the same pattern to POST /api/bonos/{id}/cancel (find_one_and_update status active->cancelled first, revert on 409). Cancel passed 13/13 race runs but has the same theoretical window.", "priority": "HIGH"}
+    ],
+    "minor": [
+      {"endpoint": "DELETE /api/students/{id}", "issue": "Deleting a student leaves its bono_purchases with status active. They keep appearing in GET /api/bonos ('Bonos pagados' screen). Editing or cancelling them returns a misleading 409 'El alumno ya ha gastado clases...' because the student no longer exists. Fix: in delete_student, mark that student's bono_purchases as deleted/cancelled (or filter them out in list_bonos)."},
+      {"endpoint": "PUT /api/bonos/{id} (move) & POST cancel", "issue": "The old student's bono_type is not reset after the bono is moved away or cancelled. It is cosmetic only: the UI shows 'Sin bono' based on 0 classes."}
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [],
+    "react_native_issues": []
+  },
+  "test_report_links": ["/app/backend/tests/test_iter5_bonos.py", "/app/test_reports/pytest/pytest_iter5.xml"],
+  "action_items": [
+    "HIGH: Make PUT /api/bonos/{id} (and POST /api/bonos/{id}/cancel) atomic: claim the bono doc with find_one_and_update before changing balances, and roll back on 409. Repro: tests/test_iter5_bonos.py::test_concurrent_move_race (fails in about 40% of runs).",
+    "LOW: On DELETE /api/students/{id}, cancel or remove that student's active bono_purchases so orphan rows do not show in 'Bonos pagados'."
+  ],
+  "critical_code_review_comments": [
+    "update_bono / cancel_bono use a read-then-write pattern on bono_purchases with no atomic status/version guard (see above).",
+    "A move does two separate student updates with no transaction. If the process crashes between the old-student decrement and the new-student increment, classes are lost. Low risk.",
+    "Frontend bonos.tsx is well structured: loading, error and retry states, the busy-disabled Save button, two-tap cancel confirm, and testIDs on all interactive elements."
+  ],
+  "updated_files": ["/app/backend/tests/test_iter5_bonos.py (new)"],
+  "success_rate": {"backend": "92% (12/13; plus the flaky race test)", "frontend": "100%"},
+  "flaky_tests": [{"test": "test_concurrent_move_race", "failure_rate": "3/8 runs", "note": "real backend race, not a test issue"}],
+  "seed_data_creation": "Only TEST_ students were created (via the API and one approved TEST_ registration). All were deleted along with their bono_purchases and the TEST_ registration. Final state: 57 real students, all 0 classes / 0 €, GET /api/bonos empty.",
+  "retest_needed": true,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Admin PIN 688202. 57 real students (all 0 classes) plus one real pending registration 'Lucía Ruiz': do not touch them. Valid class date for attendance in tests: 2026-10-06. The container clock is Nov 2026. The bono edit modal slides in: wait about 1 s after edit-bono-modal appears before tapping. TEST_ students show at the end of the Alumnos FlatList: scroll with the mouse wheel to find them."
+}
