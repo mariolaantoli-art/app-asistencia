@@ -107,7 +107,11 @@ export default function AlumnosScreen() {
   }
 
   const today = todayYMD();
-  const students = studentsQuery.data ?? [];
+  // Primero los que tienen bono con saldo, después los que no; dentro de cada grupo se mantiene el orden de la lista
+  const students = useMemo(() => {
+    const all = studentsQuery.data ?? [];
+    return [...all.filter((s) => s.classes_remaining > 0), ...all.filter((s) => s.classes_remaining <= 0)];
+  }, [studentsQuery.data]);
   const selectedIndex = selectedDay ? days.indexOf(selectedDay) : -1;
 
   return (
