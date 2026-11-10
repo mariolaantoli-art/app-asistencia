@@ -24,6 +24,11 @@ import { defaultClassDay, formatLongDate, formatShortDate, todayYMD } from "@/sr
 
 const DAY_CHIP_W = 96;
 
+// Sin mayúsculas ni tildes: "maria" encuentra "MARÍA"
+function normalize(s: string): string {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
 export default function AlumnosScreen() {
   const insets = useSafeAreaInsets();
   const { colors } = useTheme();
@@ -108,10 +113,12 @@ export default function AlumnosScreen() {
 
   const today = todayYMD();
   // Primero los que tienen bono con saldo, después los que no; dentro de cada grupo se mantiene el orden de la lista
+  const [search, setSearch] = useState("");
   const students = useMemo(() => {
-    const all = studentsQuery.data ?? [];
+    const term = normalize(search.trim());
+    const all = (studentsQuery.data ?? []).filter((s) => !term || normalize(s.name).includes(term));
     return [...all.filter((s) => s.classes_remaining > 0), ...all.filter((s) => s.classes_remaining <= 0)];
-  }, [studentsQuery.data]);
+  }, [studentsQuery.data, search]);
   const selectedIndex = selectedDay ? days.indexOf(selectedDay) : -1;
 
   return (
